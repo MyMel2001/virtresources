@@ -1,11 +1,11 @@
-// universal-cooperative-wrapper-with-logging.js
+// cooperative-virtual-cpus.js
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import path from "path";
 
 // --- Helpers ---
-function spawnWorkers(count, logUsage = false) {
+function spawnWorkers(count, logUsage = false, summaryCollector = null) {
   console.log(`Spawning ${count} virtual CPUs...`);
   const workers = [];
   for (let i = 0; i < count; i++) {
@@ -23,16 +23,34 @@ function spawnWorkers(count, logUsage = false) {
       { eval: true }
     );
 
-    if (logUsage) {
+    if (logUsage && summaryCollector) {
       worker.on("message", (msg) => {
-        // fixed: avoid nested template string issues
-        console.log("[Worker " + i + "] busy ticks in last 2s: " + msg.busyTicks);
+        summaryCollector.add(i, msg.busyTicks);
       });
     }
 
     workers.push(worker);
   }
   return workers;
+}
+
+// Simple collector for worker stats
+class WorkerSummary {
+  constructor(interval = 2000) {
+    this.stats = {};
+    setInterval(() => this.printSummary(), interval);
+  }
+
+  add(id, ticks) {
+    this.stats[id] = ticks;
+  }
+
+  printSummary() {
+    const total = Object.values(this.stats).reduce((a, b) => a + b, 0);
+    const active = Object.values(this.stats).filter((v) => v > 0).length;
+    console.log(`[Summary] Workers active: ${active}, Total busy ticks: ${total}`);
+    this.stats = {}; // reset for next interval
+  }
 }
 
 function getCpuUsage() {
@@ -55,7 +73,7 @@ function isCLI(appPath) {
 // --- Main ---
 const args = process.argv.slice(2);
 if (args.length < 1) {
-  console.log("Usage: node universal-cooperative-wrapper-with-logging.js <app> [virtual_cpus] [--autoscale] [--log] [app_args...]");
+  console.log("Usage: node cooperative-virtual-cpus.js <app> [virtual_cpus] [--autoscale] [--log] [app_args...]");
   process.exit(1);
 }
 
@@ -87,8 +105,11 @@ appProc.on("exit", (code) => {
   process.exit(code);
 });
 
-// Spawn virtual CPUs with optional logging
-let workers = spawnWorkers(virtualCpus, logUsage);
+// If logging is enabled, create summary collector
+const summaryCollector = logUsage ? new WorkerSummary() : null;
+
+// Spawn virtual CPUs with summary logging
+let workers = spawnWorkers(virtualCpus, logUsage, summaryCollector);
 
 // --- Optional Auto-Scaling ---
 if (autoscale) {
@@ -105,7 +126,7 @@ if (autoscale) {
 
     if (diff > 0) {
       console.log(`Scaling up virtual CPUs: +${diff}`);
-      workers.push(...spawnWorkers(diff, logUsage));
+      workers.push(...spawnWorkers(diff, logUsage, summaryCollector));
     } else if (diff < 0) {
       console.log(`Scaling down virtual CPUs: ${-diff}`);
       for (let i = 0; i < -diff; i++) workers.pop().terminate();

@@ -1,4 +1,4 @@
-// dynamic-cooperative-wrapper.js
+// cooperative-virtual-cpus.js
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import readline from "node:readline";
@@ -82,7 +82,7 @@ function spawnWorkers(count, appProc) {
 const args = process.argv.slice(2);
 
 if (args.length < 1) {
-  console.log("Usage: node dynamic-cooperative-wrapper.js <app> [virtual_cpus] [app_args...]");
+  console.log("Usage: node cooperative-virtual-cpus.js <app> [virtual_cpus] [app_args...]");
   process.exit(1);
 }
 

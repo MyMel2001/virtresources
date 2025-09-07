@@ -1,1 +1,1 @@
-nexe cooperative-virtual-cpus.js -o vcpu-run
+nexe cooperative-virtual-cpus.js --build -o vcpu-run

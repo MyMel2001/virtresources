@@ -1,114 +1,103 @@
-// cooperative-virtual-cpus.js
+// universal-cooperative-wrapper.js
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
-import readline from "node:readline";
 import os from "node:os";
-import { performance } from "node:perf_hooks";
+import fs from "fs";
+import path from "path";
 
-// --- Helper Functions ---
-function getCpuUsage() {
-  const cpus = os.cpus();
-  let totalIdle = 0;
-  let totalTick = 0;
-
-  for (const cpu of cpus) {
-    for (const type in cpu.times) {
-      totalTick += cpu.times[type];
-    }
-    totalIdle += cpu.times.idle;
-  }
-
-  return { totalIdle, totalTick };
-}
-
-function spawnApp(app, args = []) {
-  console.log(`Launching app: ${app} ${args.join(" ")}`);
-  const proc = spawn(app, args, { stdio: ["pipe", "pipe", "inherit"] });
-  proc.on("exit", (code) => console.log(`App exited with code ${code}`));
-  return proc;
-}
-
-function spawnWorkers(count, appProc) {
+// --- Helpers ---
+function spawnWorkers(count) {
   console.log(`Spawning ${count} virtual CPUs...`);
   const workers = [];
-  let rr = 0;
-
   for (let i = 0; i < count; i++) {
     const worker = new Worker(
       `
       const { parentPort } = require("node:worker_threads");
-      parentPort.on("message", (chunk) => {
-        // Simulate CPU-bound processing
-        const result = chunk.toUpperCase();
-        parentPort.postMessage(result);
-      });
+      // Idle worker to simulate a virtual CPU
+      setInterval(() => {}, 1000);
       `,
       { eval: true }
     );
-
-    worker.on("message", (msg) => {
-      appProc.stdin.write(msg + "\\n");
-    });
-
     workers.push(worker);
   }
-
-  // Read app output, chunk it efficiently
-  const rl = readline.createInterface({ input: appProc.stdout });
-  const chunkSize = 1; // lines per task, can adjust
-  let buffer = [];
-
-  rl.on("line", (line) => {
-    buffer.push(line);
-    if (buffer.length >= chunkSize) {
-      const task = buffer.join("\n");
-      workers[rr].postMessage(task);
-      rr = (rr + 1) % workers.length;
-      buffer = [];
-    }
-  });
-
-  rl.on("close", () => {
-    if (buffer.length > 0) {
-      const task = buffer.join("\n");
-      workers[rr].postMessage(task);
-    }
-  });
-
   return workers;
+}
+
+function getCpuUsage() {
+  const cpus = os.cpus();
+  let totalIdle = 0;
+  let totalTick = 0;
+  for (const cpu of cpus) {
+    for (const type in cpu.times) totalTick += cpu.times[type];
+    totalIdle += cpu.times.idle;
+  }
+  return { totalIdle, totalTick };
+}
+
+// Detect CLI vs GUI (simple heuristic)
+function isCLI(appPath) {
+  const ext = path.extname(appPath).toLowerCase();
+  if (process.platform === "win32") return ext === ".exe" || ext === ".bat" || ext === ".cmd";
+  return true; // assume non-Windows binaries are CLI
 }
 
 // --- Main ---
 const args = process.argv.slice(2);
-
 if (args.length < 1) {
-  console.log("Usage: node cooperative-virtual-cpus.js <app> [virtual_cpus] [app_args...]");
+  console.log("Usage: node universal-cooperative-wrapper.js <app> [virtual_cpus] [--autoscale] [app_args...]");
   process.exit(1);
 }
 
-const app = args[0];
-const physicalCores = os.cpus().length;
-let virtualCpus = args[1] ? parseInt(args[1], 10) : physicalCores;
-const appArgs = args[1] ? args.slice(2) : args.slice(1);
+let app = args[0];
+let virtualCpus = os.cpus().length;
+let autoscale = false;
+let appArgs = [];
 
-console.log(`Detected ${physicalCores} physical cores. Using ${virtualCpus} virtual CPUs.`);
+for (let i = 1; i < args.length; i++) {
+  if (args[i] === "--autoscale") autoscale = true;
+  else if (!isNaN(parseInt(args[i]))) virtualCpus = parseInt(args[i], 10);
+  else {
+    appArgs = args.slice(i);
+    break;
+  }
+}
 
-// Run app
-const appProc = spawnApp(app, appArgs);
+console.log(`Detected ${os.cpus().length} physical cores. Using ${virtualCpus} virtual CPUs.`);
+console.log(`Auto-scaling is ${autoscale ? "ENABLED" : "DISABLED"}.`);
 
-// Spawn initial workers
-const workers = spawnWorkers(virtualCpus, appProc);
+// Determine stdio based on CLI/GUI
+const cliMode = isCLI(app);
+const stdioOption = cliMode ? "inherit" : "inherit"; // GUI apps stay attached
+const appProc = spawn(app, appArgs, { stdio: stdioOption });
 
-// --- Dynamic scaling ---
-let lastUsage = getCpuUsage();
-setInterval(() => {
-  const currUsage = getCpuUsage();
-  const idleDiff = currUsage.totalIdle - lastUsage.totalIdle;
-  const totalDiff = currUsage.totalTick - lastUsage.totalTick;
-  const load = 1 - idleDiff / totalDiff;
+appProc.on("exit", (code) => {
+  console.log(`App exited with code ${code}`);
+  process.exit(code);
+});
 
-  console.log(`System CPU load: ${(load * 100).toFixed(1)}%`);
+// Spawn virtual CPUs
+let workers = spawnWorkers(virtualCpus);
 
-  lastUsage = currUsage;
-  // Optional: dynamically increase/decrease virtual CPUs based on load
-}, 2000);
+// --- Optional Auto-Scaling ---
+if (autoscale) {
+  let lastUsage = getCpuUsage();
+  setInterval(() => {
+    const currUsage = getCpuUsage();
+    const idleDiff = currUsage.totalIdle - lastUsage.totalIdle;
+    const totalDiff = currUsage.totalTick - lastUsage.totalTick;
+    const load = 1 - idleDiff / totalDiff;
+    lastUsage = currUsage;
+
+    // Adjust virtual CPUs based on load
+    const desiredVCPUs = Math.max(1, Math.min(os.cpus().length * 2, Math.round(load * os.cpus().length * 2)));
+    const diff = desiredVCPUs - workers.length;
+
+    if (diff > 0) {
+      console.log(`Scaling up virtual CPUs: +${diff}`);
+      workers.push(...spawnWorkers(diff));
+    } else if (diff < 0) {
+      console.log(`Scaling down virtual CPUs: ${-diff}`);
+      for (let i = 0; i < -diff; i++) workers.pop().terminate();
+    }
+  }, 2000);
+}

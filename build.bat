@@ -1,1 +1,1 @@
-pkg cooperative-virtual-cpus.js --targets node18-linux-x64,node18-macos-x64,node18-win-x64 --output vcpu-run
+nexe universal-cooperative-wrapper-with-summary.js -o vcpu-run

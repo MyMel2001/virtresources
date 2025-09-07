@@ -1,6 +1,6 @@
 # virtcpus
 
-Run app with "virtual CPUs" in NodeJS
+Run app with "virtual CPUs" in NodeJS. (Inspired by SoftRam.)
 
 ## How it works
 

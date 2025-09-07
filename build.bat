@@ -1,1 +1,1 @@
-nexe universal-cooperative-wrapper-with-summary.js -o vcpu-run
+nexe cooperative-virtual-cpus.js -o vcpu-run

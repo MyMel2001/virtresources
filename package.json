@@ -1,0 +1,14 @@
+{
+  "name": "virtcpus",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "package": "electron-forge package --platform=win32,darwin,linux",
+    "make": "electron-forge make"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.8.3",
+    "electron": "^28.2.0"
+  }
+}

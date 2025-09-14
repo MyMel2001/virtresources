@@ -191,7 +191,7 @@ const cliMode = isCLI(app);
 const stdioOption = cliMode ? "inherit" : "inherit";
 let appProc = null;
 
-const appProc = spawn(app, appArgs, {
+appProc = spawn(app, appArgs, {
   stdio: stdioOption,
   shell: process.platform !== "win32" // needed for Linux/macOS
 });

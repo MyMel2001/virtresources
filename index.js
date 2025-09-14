@@ -172,9 +172,6 @@ if (connectTarget) {
     socket.end();
     process.exit(0);
   });
-
-  // ✅ End client mode cleanly
-  process.exit(0);
 }
 
 

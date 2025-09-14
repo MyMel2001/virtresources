@@ -1,6 +1,6 @@
-// virtcpus.js
-// Host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]
-// Client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]
+// VirtCPUS
+// Host:   virtcpus <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]
+// Client: virtcpus --connect <host>:<port> [vcpus] [--autoscale] [--log]
 
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
@@ -93,8 +93,8 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.length < 1) {
     console.log("Usage:");
-    console.log("  Host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]");
-    console.log("  Client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]");
+    console.log("  Host:   virtcpus <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]");
+    console.log("  Client: virtcpus --connect <host>:<port> [vcpus] [--autoscale] [--log]");
     process.exit(1);
   }
 

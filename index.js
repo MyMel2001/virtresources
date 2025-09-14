@@ -1,4 +1,4 @@
-// VirtCPUs (Distributed Host → Clients Only)
+// virtcpus.js
 // Host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]
 // Client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]
 
@@ -38,7 +38,6 @@ function spawnWorkers(count, logUsage = false, summaryCollector = null, prefix =
   return workers;
 }
 
-// Simple collector for worker stats
 class WorkerSummary {
   constructor(interval = 2000) {
     this.stats = {};
@@ -89,58 +88,118 @@ function isCLI(appPath) {
   return true;
 }
 
-// --- Main ---
-const args = process.argv.slice(2);
-if (args.length < 1) {
-  console.log("Usage:");
-  console.log("  Host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]");
-  console.log("  Client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]");
-  process.exit(1);
-}
-
-let app = null;
-let virtualCpus = os.cpus().length;
-let autoscale = false;
-let logUsage = false;
-let appArgs = [];
-let listenPort = null;
-let connectTarget = null;
-
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--autoscale") autoscale = true;
-  else if (args[i] === "--log") logUsage = true;
-  else if (args[i] === "--listen") listenPort = parseInt(args[++i], 10);
-  else if (args[i] === "--connect") connectTarget = args[++i];
-  else if (!isNaN(parseInt(args[i]))) virtualCpus = parseInt(args[i], 10);
-  else if (!app) app = args[i];
-  else appArgs.push(args[i]);
-}
-
-// --- Client Mode ---
-if (connectTarget) {
-  if (app || appArgs.length > 0 || listenPort) {
-    console.error("❌ Error: In client mode (--connect), you cannot specify an app, app arguments, or --listen.");
+// --- Main Function ---
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length < 1) {
+    console.log("Usage:");
+    console.log("  Host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]");
+    console.log("  Client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]");
     process.exit(1);
   }
 
-  const [host, portStr] = connectTarget.split(":");
-  const port = parseInt(portStr, 10);
-  const socket = net.createConnection({ host, port }, () => {
-    console.log(`==============================`);
-    console.log(`[Client] Connected to host at ${host}:${port}`);
-    console.log(`[Client] Running in worker-only mode`);
-    console.log(`==============================`);
-    console.log(`[Client] ${virtualCpus} virtual CPUs active. Press Ctrl+C to quit.`);
+  let app = null;
+  let virtualCpus = os.cpus().length;
+  let autoscale = false;
+  let logUsage = false;
+  let appArgs = [];
+  let listenPort = null;
+  let connectTarget = null;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--autoscale") autoscale = true;
+    else if (args[i] === "--log") logUsage = true;
+    else if (args[i] === "--listen") listenPort = parseInt(args[++i], 10);
+    else if (args[i] === "--connect") connectTarget = args[++i];
+    else if (!isNaN(parseInt(args[i]))) virtualCpus = parseInt(args[i], 10);
+    else if (!app) app = args[i];
+    else appArgs.push(args[i]);
+  }
+
+  // --- Client Mode ---
+  if (connectTarget) {
+    if (app || appArgs.length > 0 || listenPort) {
+      console.error("❌ Error: In client mode (--connect), you cannot specify an app, app arguments, or --listen.");
+      process.exit(1);
+    }
+
+    const [host, portStr] = connectTarget.split(":");
+    const port = parseInt(portStr, 10);
+    const socket = net.createConnection({ host, port }, () => {
+      console.log(`==============================`);
+      console.log(`[Client] Connected to host at ${host}:${port}`);
+      console.log(`[Client] Running in worker-only mode`);
+      console.log(`==============================`);
+      console.log(`[Client] ${virtualCpus} virtual CPUs active. Press Ctrl+C to quit.`);
+    });
+
+    const summaryCollector = {
+      add: (id, ticks) => {
+        socket.write(JSON.stringify({ id: `remote-${id}`, ticks }) + "\n");
+      }
+    };
+
+    const workers = spawnWorkers(virtualCpus, logUsage, summaryCollector, "remote");
+
+    if (autoscale) {
+      let lastUsage = getCpuUsage();
+      setInterval(() => {
+        const currUsage = getCpuUsage();
+        const idleDiff = currUsage.totalIdle - lastUsage.totalIdle;
+        const totalDiff = currUsage.totalTick - lastUsage.totalTick;
+        const load = 1 - idleDiff / totalDiff;
+        lastUsage = currUsage;
+
+        const desiredVCPUs = Math.max(1, Math.min(os.cpus().length * 2, Math.round(load * os.cpus().length * 2)));
+        const diff = desiredVCPUs - workers.length;
+
+        if (diff > 0) {
+          console.log(`Scaling up remote virtual CPUs: +${diff}`);
+          workers.push(...spawnWorkers(diff, logUsage, summaryCollector, "remote"));
+        } else if (diff < 0) {
+          console.log(`Scaling down remote virtual CPUs: ${-diff}`);
+          for (let i = 0; i < -diff; i++) workers.pop().terminate();
+        }
+      }, 2000);
+    }
+
+    process.on("SIGINT", () => {
+      console.log("Client shutting down...");
+      workers.forEach(w => w.terminate());
+      socket.end();
+      process.exit(0);
+    });
+
+    // Keep Node alive indefinitely
+    await new Promise(() => {}); 
+  }
+
+  // --- Host Mode ---
+  if (!app) {
+    console.error("❌ Error: Host mode requires an application to run.");
+    process.exit(1);
+  }
+
+  console.log(`Detected ${os.cpus().length} physical cores. Using ${virtualCpus} virtual CPUs.`);
+  console.log(`Auto-scaling: ${autoscale ? "ENABLED" : "DISABLED"}, Logging: ${logUsage ? "ENABLED" : "DISABLED"}`);
+
+  const cliMode = isCLI(app);
+  const stdioOption = cliMode ? "inherit" : "inherit";
+
+  const appProc = spawn(app, appArgs, {
+    stdio: stdioOption,
+    shell: process.platform !== "win32"
   });
 
-  const summaryCollector = {
-    add: (id, ticks) => {
-      socket.write(JSON.stringify({ id: `remote-${id}`, ticks }) + "\n");
-    }
-  };
+  appProc.on("exit", (code) => {
+    console.log(`App exited with code ${code}`);
+    process.exit(code);
+  });
 
-  let workers = spawnWorkers(virtualCpus, logUsage, summaryCollector, "remote");
+  const summaryCollector = logUsage ? new WorkerSummary() : null;
+  const workers = spawnWorkers(virtualCpus, logUsage, summaryCollector, "local");
 
+  // Auto-scaling for host
   if (autoscale) {
     let lastUsage = getCpuUsage();
     setInterval(() => {
@@ -154,101 +213,47 @@ if (connectTarget) {
       const diff = desiredVCPUs - workers.length;
 
       if (diff > 0) {
-        console.log(`Scaling up remote virtual CPUs: +${diff}`);
-        workers.push(...spawnWorkers(diff, logUsage, summaryCollector, "remote"));
+        console.log(`Scaling up local virtual CPUs: +${diff}`);
+        workers.push(...spawnWorkers(diff, logUsage, summaryCollector, "local"));
       } else if (diff < 0) {
-        console.log(`Scaling down remote virtual CPUs: ${-diff}`);
+        console.log(`Scaling down local virtual CPUs: ${-diff}`);
         for (let i = 0; i < -diff; i++) workers.pop().terminate();
       }
     }, 2000);
   }
 
-  process.on("SIGINT", () => {
-    console.log("Client shutting down...");
-    workers.forEach(w => w.terminate());
-    socket.end();
-    process.exit(0);
-  });
+  // Network listener for remote clients
+  if (listenPort) {
+    const server = net.createServer((socket) => {
+      console.log("Remote client connected.");
 
-}
-
-// --- Host Mode ---
-if (!app) {
-  console.error("❌ Error: Host mode requires an application to run.");
-  process.exit(1);
-}
-
-console.log(`Detected ${os.cpus().length} physical cores. Using ${virtualCpus} virtual CPUs.`);
-console.log(`Auto-scaling: ${autoscale ? "ENABLED" : "DISABLED"}, Logging: ${logUsage ? "ENABLED" : "DISABLED"}`);
-
-const cliMode = isCLI(app);
-const stdioOption = cliMode ? "inherit" : "inherit";
-
-const appProc = spawn(app, appArgs, {
-  stdio: stdioOption,
-  shell: process.platform !== "win32" // shell for Linux/macOS
-});
-
-appProc.on("exit", (code) => {
-  console.log(`App exited with code ${code}`);
-  process.exit(code);
-});
-
-const summaryCollector = logUsage ? new WorkerSummary() : null;
-let workers = spawnWorkers(virtualCpus, logUsage, summaryCollector, "local");
-
-// Auto-scaling for host
-if (autoscale) {
-  let lastUsage = getCpuUsage();
-  setInterval(() => {
-    const currUsage = getCpuUsage();
-    const idleDiff = currUsage.totalIdle - lastUsage.totalIdle;
-    const totalDiff = currUsage.totalTick - lastUsage.totalTick;
-    const load = 1 - idleDiff / totalDiff;
-    lastUsage = currUsage;
-
-    const desiredVCPUs = Math.max(1, Math.min(os.cpus().length * 2, Math.round(load * os.cpus().length * 2)));
-    const diff = desiredVCPUs - workers.length;
-
-    if (diff > 0) {
-      console.log(`Scaling up local virtual CPUs: +${diff}`);
-      workers.push(...spawnWorkers(diff, logUsage, summaryCollector, "local"));
-    } else if (diff < 0) {
-      console.log(`Scaling down local virtual CPUs: ${-diff}`);
-      for (let i = 0; i < -diff; i++) workers.pop().terminate();
-    }
-  }, 2000);
-}
-
-// Network listener for remote clients
-if (listenPort) {
-  const server = net.createServer((socket) => {
-    console.log("Remote client connected.");
-
-    let buffer = "";
-    socket.on("data", (data) => {
-      buffer += data.toString();
-      let lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const msg = JSON.parse(line);
-          if (logUsage && summaryCollector) {
-            summaryCollector.add(msg.id, msg.ticks);
+      let buffer = "";
+      socket.on("data", (data) => {
+        buffer += data.toString();
+        let lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (logUsage && summaryCollector) {
+              summaryCollector.add(msg.id, msg.ticks);
+            }
+          } catch (e) {
+            console.error("Invalid message from client:", line);
           }
-        } catch (e) {
-          console.error("Invalid message from client:", line);
         }
-      }
+      });
+
+      socket.on("end", () => {
+        console.log("Remote client disconnected.");
+      });
     });
 
-    socket.on("end", () => {
-      console.log("Remote client disconnected.");
+    server.listen(listenPort, () => {
+      console.log(`Listening for remote clients on port ${listenPort}...`);
     });
-  });
-
-  server.listen(listenPort, () => {
-    console.log(`Listening for remote clients on port ${listenPort}...`);
-  });
+  }
 }
+
+main();

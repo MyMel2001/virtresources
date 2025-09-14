@@ -173,8 +173,10 @@ if (connectTarget) {
     process.exit(0);
   });
 
-  return;
+  // ✅ End client mode cleanly
+  process.exit(0);
 }
+
 
 // --- Host Mode ---
 if (!app) {

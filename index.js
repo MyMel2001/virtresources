@@ -9,19 +9,21 @@ function spawnWorkers(count, logUsage = false, summaryCollector = null) {
   console.log(`Spawning ${count} virtual CPUs...`);
   const workers = [];
   for (let i = 0; i < count; i++) {
-    const worker = new Worker(
-      `
-      const { parentPort } = require("node:worker_threads");
-      let busyTicks = 0;
-      setInterval(() => { busyTicks++; }, 1000);
-      parentPort.on("message", (msg) => {}); // placeholder
-      setInterval(() => {
-        parentPort.postMessage({ busyTicks });
-        busyTicks = 0;
-      }, 2000);
-      `,
-      { eval: true }
-    );
+    // inside spawnWorkers()
+const worker = new Worker(
+  `
+        import { parentPort } from "node:worker_threads";
+        let busyTicks = 0;
+        setInterval(() => { busyTicks++; }, 1000);
+        parentPort.on("message", (msg) => {}); // placeholder
+        setInterval(() => {
+          parentPort.postMessage({ busyTicks });
+          busyTicks = 0;
+        }, 2000);
+        `,
+        { eval: true, type: "module" } // ensure ESM worker
+      );
+
 
     if (logUsage && summaryCollector) {
       worker.on("message", (msg) => {
@@ -98,7 +100,12 @@ console.log(`Auto-scaling: ${autoscale ? "ENABLED" : "DISABLED"}, Logging: ${log
 
 const cliMode = isCLI(app);
 const stdioOption = cliMode ? "inherit" : "inherit"; // GUI apps stay attached
-const appProc = spawn(app, appArgs, { stdio: stdioOption });
+// app process
+const appProc = spawn(app, appArgs, {
+  stdio: stdioOption,
+  shell: process.platform !== "win32" // needed for Linux/macOS
+});
+
 
 appProc.on("exit", (code) => {
   console.log(`App exited with code ${code}`);

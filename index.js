@@ -1,5 +1,5 @@
-// VirtCPUs (Distributed)
-// Run as host:   node virtcpus.js app [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]
+// VirtCPUs
+// Run as host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]
 // Run as client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]
 
 import { spawn } from "node:child_process";
@@ -97,8 +97,8 @@ const args = process.argv.slice(2);
 
 if (args.length < 1) {
   console.log("Usage:");
-  console.log("  Host:   virtcpus <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]");
-  console.log("  Client: virtcpus --connect <host>:<port> [vcpus] [--autoscale] [--log]");
+  console.log("  Host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]");
+  console.log("  Client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]");
   process.exit(1);
 }
 
@@ -122,10 +122,18 @@ for (let i = 0; i < args.length; i++) {
 
 // --- Client Mode ---
 if (connectTarget) {
+  if (app || appArgs.length > 0 || listenPort) {
+    console.error("❌ Error: In client mode (--connect), you cannot specify an app, app arguments, or --listen.");
+    process.exit(1);
+  }
+
   const [host, portStr] = connectTarget.split(":");
   const port = parseInt(portStr, 10);
   const socket = net.createConnection({ host, port }, () => {
-    console.log(`Connected to host at ${host}:${port}`);
+    console.log(`==============================`);
+    console.log(`[Client] Connected to host at ${host}:${port}`);
+    console.log(`[Client] Running in worker-only mode`);
+    console.log(`==============================`);
   });
 
   const summaryCollector = {
@@ -169,20 +177,23 @@ if (connectTarget) {
 }
 
 // --- Host Mode ---
+if (!app) {
+  console.error("❌ Error: Host mode requires an application to run.");
+  process.exit(1);
+}
+
 console.log(`Detected ${os.cpus().length} physical cores. Using ${virtualCpus} virtual CPUs.`);
 console.log(`Auto-scaling: ${autoscale ? "ENABLED" : "DISABLED"}, Logging: ${logUsage ? "ENABLED" : "DISABLED"}`);
 
-const cliMode = app ? isCLI(app) : true;
+const cliMode = isCLI(app);
 const stdioOption = cliMode ? "inherit" : "inherit";
 let appProc = null;
 
-if (app) {
-  appProc = spawn(app, appArgs, { stdio: stdioOption });
-  appProc.on("exit", (code) => {
-    console.log(`App exited with code ${code}`);
-    process.exit(code);
-  });
-}
+appProc = spawn(app, appArgs, { stdio: stdioOption });
+appProc.on("exit", (code) => {
+  console.log(`App exited with code ${code}`);
+  process.exit(code);
+});
 
 const summaryCollector = logUsage ? new WorkerSummary() : null;
 let workers = spawnWorkers(virtualCpus, logUsage, summaryCollector, "local");

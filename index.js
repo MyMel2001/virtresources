@@ -24,7 +24,7 @@ function spawnWorkers(count, logUsage = false, summaryCollector = null, prefix =
         busyTicks = 0;
       }, 2000);
       `,
-      { eval: true }
+      { eval: true, type: "module" }
     );
 
     if (logUsage && summaryCollector) {
@@ -191,7 +191,11 @@ const cliMode = isCLI(app);
 const stdioOption = cliMode ? "inherit" : "inherit";
 let appProc = null;
 
-appProc = spawn(app, appArgs, { stdio: stdioOption });
+const appProc = spawn(app, appArgs, {
+  stdio: stdioOption,
+  shell: process.platform !== "win32" // needed for Linux/macOS
+});
+
 appProc.on("exit", (code) => {
   console.log(`App exited with code ${code}`);
   process.exit(code);

@@ -1,4 +1,4 @@
-# virtcpus  
+# VirtCPUs  
 Simulate extra virtual CPUs for any external application (CLI or GUI) using Node.js worker threads.  
 
 This wrapper launches an app and spawns additional “virtual CPU” threads, giving the OS scheduler more contexts to work with.  

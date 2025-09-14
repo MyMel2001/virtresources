@@ -170,8 +170,6 @@ if (connectTarget) {
     process.exit(0);
   });
 
-  // ❌ KEEP NODE ALIVE (do NOT exit)
-  return;
 }
 
 // --- Host Mode ---

@@ -1,6 +1,6 @@
-// VirtCPUs
-// Run as host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]
-// Run as client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]
+// VirtCPUs (Distributed Host → Clients Only)
+// Host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]
+// Client: node virtcpus.js --connect <host>:<port> [vcpus] [--autoscale] [--log]
 
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
@@ -18,13 +18,13 @@ function spawnWorkers(count, logUsage = false, summaryCollector = null, prefix =
       const { parentPort } = require("node:worker_threads");
       let busyTicks = 0;
       setInterval(() => { busyTicks++; }, 1000);
-      parentPort.on("message", () => {}); // placeholder
+      parentPort.on("message", () => {});
       setInterval(() => {
         parentPort.postMessage({ busyTicks });
         busyTicks = 0;
       }, 2000);
       `,
-      { eval: true, type: "module" }
+      { eval: true }
     );
 
     if (logUsage && summaryCollector) {
@@ -51,17 +51,14 @@ class WorkerSummary {
 
   printSummary() {
     const entries = Object.entries(this.stats);
-
     const local = entries.filter(([id]) => id.startsWith("local-"));
     const remote = entries.filter(([id]) => id.startsWith("remote-"));
-
     const sumTicks = (arr) => arr.reduce((a, [, v]) => a + v, 0);
     const activeCount = (arr) => arr.filter(([, v]) => v > 0).length;
 
     const localTicks = sumTicks(local);
     const remoteTicks = sumTicks(remote);
     const totalTicks = localTicks + remoteTicks;
-
     const localActive = activeCount(local);
     const remoteActive = activeCount(remote);
     const totalActive = localActive + remoteActive;
@@ -72,7 +69,7 @@ class WorkerSummary {
       `Total: ${totalActive} workers, ${totalTicks} ticks`
     );
 
-    this.stats = {}; // reset for next interval
+    this.stats = {};
   }
 }
 
@@ -94,7 +91,6 @@ function isCLI(appPath) {
 
 // --- Main ---
 const args = process.argv.slice(2);
-
 if (args.length < 1) {
   console.log("Usage:");
   console.log("  Host:   node virtcpus.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]");
@@ -134,6 +130,7 @@ if (connectTarget) {
     console.log(`[Client] Connected to host at ${host}:${port}`);
     console.log(`[Client] Running in worker-only mode`);
     console.log(`==============================`);
+    console.log(`[Client] ${virtualCpus} virtual CPUs active. Press Ctrl+C to quit.`);
   });
 
   const summaryCollector = {
@@ -172,8 +169,10 @@ if (connectTarget) {
     socket.end();
     process.exit(0);
   });
-}
 
+  // ❌ KEEP NODE ALIVE (do NOT exit)
+  return;
+}
 
 // --- Host Mode ---
 if (!app) {
@@ -186,11 +185,10 @@ console.log(`Auto-scaling: ${autoscale ? "ENABLED" : "DISABLED"}, Logging: ${log
 
 const cliMode = isCLI(app);
 const stdioOption = cliMode ? "inherit" : "inherit";
-let appProc = null;
 
-appProc = spawn(app, appArgs, {
+const appProc = spawn(app, appArgs, {
   stdio: stdioOption,
-  shell: process.platform !== "win32" // needed for Linux/macOS
+  shell: process.platform !== "win32" // shell for Linux/macOS
 });
 
 appProc.on("exit", (code) => {

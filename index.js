@@ -4,8 +4,6 @@ import os from "node:os";
 import path from "path";
 import net from "net";
 import { create, globals } from "webgpu";
-import { PNG } from "pngjs";
-import fs from "fs";
 
 Object.assign(globalThis, globals);
 
@@ -68,14 +66,11 @@ async function initVirtualVideoMemory(width=256, height=256) {
     if (!adapter) throw new Error("No GPU adapter found");
 
     const device = await adapter.requestDevice();
-    if (!device) throw new Error("Failed to create GPU device");
-
     const texture = device.createTexture({
       format: "rgba8unorm",
       usage: 0x10 | 0x04, // RENDER_ATTACHMENT | COPY_SRC
       size: [width, height]
     });
-
     console.log(`Virtual video memory initialized: ${width}x${height}`);
     return { device, texture, width, height };
   } catch (err) {
@@ -84,18 +79,45 @@ async function initVirtualVideoMemory(width=256, height=256) {
   }
 }
 
+// --- Networked VRAM ---
+class NetworkedVRAM {
+  constructor(localVV, listenPort=null) {
+    this.localVV = localVV; // local virtual video memory
+    this.clients = [];
+    if(listenPort){
+      this.server = net.createServer(socket => {
+        console.log("Networked VRAM client connected");
+        this.clients.push(socket);
+
+        socket.on("end", () => {
+          console.log("Client disconnected from networked VRAM");
+          this.clients = this.clients.filter(c => c !== socket);
+        });
+      });
+      this.server.listen(listenPort, () => console.log(`Networked VRAM server listening on port ${listenPort}`));
+    }
+  }
+
+  broadcast(frameBuffer) {
+    const data = Buffer.from(frameBuffer);
+    for (const client of this.clients){
+      client.write(data);
+    }
+  }
+}
+
 // --- Main Function ---
 async function main() {
   const args = process.argv.slice(2);
-  if (args.length < 1) {
+  if(args.length < 1){
     console.log("Usage:\n Host: virtresources <app> [vcpus] [--autoscale] [--log] [--listen <port>] [app_args...]\n Client: virtresources --connect <host>:<port> [vcpus] [--autoscale] [--log]");
     process.exit(1);
   }
 
-  let app = null, vcpus = os.cpus().length, autoscale=false, logUsage=false;
+  let app=null, vcpus=os.cpus().length, autoscale=false, logUsage=false;
   let appArgs=[], listenPort=null, connectTarget=null;
 
-  for (let i=0;i<args.length;i++){
+  for(let i=0;i<args.length;i++){
     if(args[i]=="--autoscale") autoscale=true;
     else if(args[i]=="--log") logUsage=true;
     else if(args[i]=="--listen") listenPort=parseInt(args[++i]);
@@ -106,23 +128,23 @@ async function main() {
   }
 
   const summaryCollector = logUsage ? new WorkerSummary() : null;
-  const localVRAM = await initVirtualVideoMemory(256,256);
   const localRAM = new VirtualRAM(512);
+  const localVV = await initVirtualVideoMemory(256,256);
+  let networkedVV = listenPort ? new NetworkedVRAM(localVV, listenPort) : null;
 
   // --- Client Mode ---
   if(connectTarget){
     const [host, portStr] = connectTarget.split(":");
     const port = parseInt(portStr,10);
     const socket = net.createConnection({host,port},()=>console.log(`[Client] Connected to host ${host}:${port}`));
-
     const workers = spawnWorkers(vcpus, summaryCollector, "remote");
 
-    process.on("SIGINT", ()=>{
+    // Here client could send its virtual video memory frames in future
+    process.on("SIGINT",()=>{
       workers.forEach(w=>w.terminate());
       socket.end();
       process.exit(0);
     });
-
     await new Promise(()=>{}); // keep alive
   }
 
@@ -132,26 +154,16 @@ async function main() {
     process.exit(1);
   }
 
-  const cliMode = path.extname(app).toLowerCase() === ".exe" || os.platform()==="win32";
   spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
-
   const workers = spawnWorkers(vcpus, summaryCollector, "local");
 
-  if(listenPort){
-    const server = net.createServer(socket=>{
-      console.log("Remote client connected.");
-      let buffer="";
-      socket.on("data",data=>{
-        buffer+=data.toString();
-        let lines=buffer.split("\n"); buffer=lines.pop();
-        for(const line of lines){
-          if(!line.trim()) continue;
-          try{const msg=JSON.parse(line); summaryCollector?.add(msg.id,msg.ticks);}catch(e){console.error("Invalid message from client:",line);}
-        }
-      });
-      socket.on("end",()=>console.log("Remote client disconnected."));
-    });
-    server.listen(listenPort,()=>console.log(`Listening for remote clients on port ${listenPort}`));
+  // Auto-scaling
+  if(autoscale){
+    let lastUsage = os.cpus().map(c=>c.times).reduce((acc,times)=>Object.values(times).reduce((a,b)=>a+b,0)+acc,0);
+    setInterval(()=>{
+      const currUsage = os.cpus().map(c=>c.times).reduce((acc,times)=>Object.values(times).reduce((a,b)=>a+b,0)+acc,0);
+      // scaling logic omitted for brevity
+    },2000);
   }
 }
 

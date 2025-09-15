@@ -1,4 +1,4 @@
-//VirtResources
+// VirtResources
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
@@ -59,33 +59,47 @@ class VirtualRAM {
   }
 }
 
-// --- Virtual Video Memory (WebGPU) ---
-async function initVirtualVideoMemory(width=256, height=256) {
+// --- Suppress Dawn WGSL warnings ---
+function suppressWebGPUWarnings(fn) {
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk, ...args) => {
+    if (typeof chunk === "string" && chunk.includes("Unknown WGSLLanguageFeatureName")) return true;
+    return originalWrite.call(process.stderr, chunk, ...args);
+  };
   try {
-    const navigator = { gpu: create([]) };
-    const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
-    if (!adapter) throw new Error("No GPU adapter found");
-
-    // Request device explicitly without optional features
-    const device = await adapter.requestDevice({ requiredFeatures: [] });
-    const texture = device.createTexture({
-      format: "rgba8unorm",
-      usage: 0x10 | 0x04, // RENDER_ATTACHMENT | COPY_SRC
-      size: [width, height]
-    });
-    console.log(`Virtual video memory initialized: ${width}x${height}`);
-    return { device, texture, width, height };
-  } catch (err) {
-    console.warn("WebGPU failed, fallback to CPU virtual video memory:", err.message);
-    return null;
+    return fn();
+  } finally {
+    process.stderr.write = originalWrite;
   }
 }
 
+// --- Virtual Video Memory (WebGPU) ---
+async function initVirtualVideoMemory(width=256, height=256) {
+  return await suppressWebGPUWarnings(async () => {
+    try {
+      const navigator = { gpu: create([]) };
+      const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
+      if (!adapter) throw new Error("No GPU adapter found");
+
+      const device = await adapter.requestDevice({ requiredFeatures: [] });
+      const texture = device.createTexture({
+        format: "rgba8unorm",
+        usage: 0x10 | 0x04, // RENDER_ATTACHMENT | COPY_SRC
+        size: [width, height]
+      });
+      console.log(`Virtual video memory initialized: ${width}x${height}`);
+      return { device, texture, width, height };
+    } catch (err) {
+      console.warn("WebGPU unavailable, using CPU fallback:", err.message);
+      return { device: null, texture: Buffer.alloc(width*height*4), width, height };
+    }
+  });
+}
 
 // --- Networked VRAM ---
 class NetworkedVRAM {
   constructor(localVV, listenPort=null) {
-    this.localVV = localVV; // local virtual video memory
+    this.localVV = localVV;
     this.clients = [];
     if(listenPort){
       this.server = net.createServer(socket => {
@@ -133,7 +147,7 @@ async function main() {
   const summaryCollector = logUsage ? new WorkerSummary() : null;
   const localRAM = new VirtualRAM(512);
   const localVV = await initVirtualVideoMemory(256,256);
-  let networkedVV = listenPort ? new NetworkedVRAM(localVV, listenPort) : null;
+  const networkedVV = listenPort ? new NetworkedVRAM(localVV, listenPort) : null;
 
   // --- Client Mode ---
   if(connectTarget){
@@ -142,7 +156,6 @@ async function main() {
     const socket = net.createConnection({host,port},()=>console.log(`[Client] Connected to host ${host}:${port}`));
     const workers = spawnWorkers(vcpus, summaryCollector, "remote");
 
-    // Here client could send its virtual video memory frames in future
     process.on("SIGINT",()=>{
       workers.forEach(w=>w.terminate());
       socket.end();

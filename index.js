@@ -1,4 +1,4 @@
-// VirtResources
+// virtresources
 // Virtual CPU, RAM, and GPU memory pools with optional networking.
 // Runs one child process (host mode) or connects to another (client mode).
 // ---------------------------------------------------------
@@ -7,9 +7,7 @@ import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import net from "net";
-import { create, globals } from "webgpu";
-
-Object.assign(globalThis, globals); // expose GPUBufferUsage, GPUMapMode, etc.
+import { GPU } from "gpu.js";
 
 // -------------------- CLI Parsing --------------------
 function printHelp() {
@@ -30,10 +28,10 @@ Options (at least one of --cpus, --ram, --gpu required unless --connect):
 
 Examples:
   Host with RAM and CPU workers:
-    node virtresources.js --ram 512 --cpus 4 ./myapp arg1
+    node virtresources.js --ram 512 --cpus 4 ./myapp --foo bar
 
   Host with GPU pool and listen for clients:
-    node virtresources.js --gpu 256 --listen 9000 ./myapp
+    node virtresources.js --gpu 256 --listen 9000 ./serverApp
 
   Client only, connects and writes to host:
     node virtresources.js --connect 127.0.0.1:9000 --cpus 2
@@ -116,30 +114,41 @@ class VirtualRAM {
     this.autoscale = autoscale;
     console.log(`Virtual RAM initialized (${sizeMB} MB)`);
   }
+
+  write(offset, data) {
+    data.copy(this.buffer, offset, 0, Math.min(data.length, this.size - offset));
+  }
+
+  read(offset, length) {
+    return this.buffer.slice(offset, offset + length);
+  }
 }
 
 class VirtualGPURAM {
   constructor(sizeMB, autoscale = false) {
-    this.size = sizeMB * 1024 * 1024;
+    this.sizeMB = sizeMB;
     this.autoscale = autoscale;
-    this.init();
+    this.size = sizeMB * 1024 * 1024;
+    this.gpu = new GPU();
+    this.bufferLength = this.size;
+    this.kernel = this.gpu.createKernel(function() { return 0; })
+      .setOutput([this.bufferLength]);
+    this.buffer = this.kernel();
+    console.log(`Virtual GPU memory initialized (${sizeMB} MB, ${this.bufferLength} elements)`);
   }
-  async init() {
-    const navigator = {
-      gpu: create([
-        "backend=vulkan enable-dawn-features=allow_unsafe_apis,dump_shaders,disable_symbol_renaming",
-      ]),
-    };
-    const adapter = navigator.gpu.requestAdapter({
-      powerPreference: 'high-performance', // or 'low-power'
-    });
-    this.device = await adapter.requestDevice();
-    this.buffer = this.device.createBuffer({
-      size: this.size,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-      mappedAtCreation: false
-    });
-    console.log(`Virtual GPU memory initialized (${this.size / 1024 / 1024} MB)`);
+
+  write(offset, data) {
+    for (let i = 0; i < data.length && i + offset < this.bufferLength; i++) {
+      this.buffer[i + offset] = data[i];
+    }
+  }
+
+  read(offset, length) {
+    const out = new Uint8Array(length);
+    for (let i = 0; i < length && i + offset < this.bufferLength; i++) {
+      out[i] = this.buffer[i];
+    }
+    return out;
   }
 }
 
@@ -148,42 +157,33 @@ class VirtualCPUs {
     this.count = n;
     this.workers = [];
     for (let i = 0; i < n; i++) {
-      const w = new Worker(`
-        setInterval(() => {}, 1000); // idle loop
-      `, { eval: true });
+      const w = new Worker(`setInterval(() => {}, 1000);`, { eval: true });
       this.workers.push(w);
     }
     console.log(`Virtual CPUs initialized (${n} workers)`);
     if (log) {
-      setInterval(() => {
-        console.log("vCPU workers active:", this.workers.length);
-      }, 5000);
+      setInterval(() => console.log("vCPU workers active:", this.workers.length), 5000);
     }
   }
 }
 
 // -------------------- Networking --------------------
-function startServer(port, vram, gpu) {
+function startServer(port, vram, vgpu) {
   const server = net.createServer((sock) => {
     sock.on("data", (data) => {
-      // naive: just write into RAM
-      if (vram) data.copy(vram.buffer, 0, 0, Math.min(data.length, vram.size));
+      if (vram) vram.write(0, data);
+      if (vgpu) vgpu.write(0, data);
       console.log("Received data from client:", data.length);
     });
   });
-  server.listen(port, () => {
-    console.log(`Listening for clients on port ${port}`);
-  });
+  server.listen(port, () => console.log(`Listening for clients on port ${port}`));
 }
 
 function startClient(addr) {
   const [host, port] = addr.split(":");
   const sock = net.createConnection({ host, port: parseInt(port, 10) }, () => {
     console.log(`Connected to host ${addr}`);
-    // Example: periodically send a heartbeat
-    setInterval(() => {
-      sock.write(Buffer.from("heartbeat"));
-    }, 5000);
+    setInterval(() => sock.write(Buffer.from("heartbeat")), 5000);
   });
 }
 
@@ -200,29 +200,21 @@ async function main() {
   validateFlags(flags, positional);
 
   let vram, vgpu, vcpus;
-
   if (flags.ramMB) vram = new VirtualRAM(flags.ramMB, flags.autoscale);
   if (flags.gpuMB) vgpu = new VirtualGPURAM(flags.gpuMB, flags.autoscale);
   if (flags.vcpus) vcpus = new VirtualCPUs(flags.vcpus, flags.log);
 
-  if (flags.listen) {
-    startServer(flags.listen, vram, vgpu);
-  }
-
+  if (flags.listen) startServer(flags.listen, vram, vgpu);
   if (flags.connect) {
     startClient(flags.connect);
-    return; // client-only mode
+    return;
   }
 
-  // Spawn the child process with inherited stdio
+  // Spawn child process with inherited stdio
   const app = positional[0];
   const args = positional.slice(1);
   const child = spawn(app, args, { stdio: "inherit" });
-
-  child.on("exit", (code) => {
-    console.log(`Child exited with code ${code}`);
-    process.exit(code);
-  });
+  child.on("exit", code => { console.log(`Child exited with code ${code}`); process.exit(code); });
 }
 
 main().catch(err => {

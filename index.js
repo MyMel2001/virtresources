@@ -75,6 +75,7 @@ class VirtualRAM {
   constructor(sizeMB = 512, name = "VirtualRAM") {
     this.sizeMB = sizeMB;
     this.buffer = Buffer.alloc(sizeMB * 1024 * 1024);
+    this.size = this.buffer.length; // quick hot fix.
     console.log(`[VirtualRAM] Allocated ${sizeMB} MB`);
   }
 

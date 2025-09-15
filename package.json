@@ -9,7 +9,7 @@
     "make": "electron-forge make"
   },
   "dependencies": {
-    "@webgpu/types": "^1.0.0",
+    "@webgpu/types": "^0.1.64",
     "webgpu": "^0.3.0"
   },
   "devDependencies": {

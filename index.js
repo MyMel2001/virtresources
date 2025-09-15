@@ -2,7 +2,6 @@
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
-import path from "path";
 import net from "net";
 import { create, globals } from "webgpu";
 
@@ -59,43 +58,34 @@ class VirtualRAM {
   }
 }
 
-// --- Suppress Dawn WGSL warnings ---
-function suppressWebGPUWarnings(fn) {
-  const originalWrite = process.stderr.write;
-  process.stderr.write = (chunk, ...args) => {
-    if (typeof chunk === "string" && chunk.includes("Unknown WGSLLanguageFeatureName")) return true;
-    return originalWrite.call(process.stderr, chunk, ...args);
-  };
-  try {
-    return fn();
-  } finally {
-    process.stderr.write = originalWrite;
-  }
-}
-
 // --- Virtual Video Memory (WebGPU) ---
 async function initVirtualVideoMemory(width=256, height=256) {
-  return await suppressWebGPUWarnings(async () => {
-    try {
-      const navigator = { gpu: create() }; // <- no array
-      const adapter = await navigator.gpu?.requestAdapter();
+  try {
+    // Do NOT pass an empty array to create() — Dawn interprets it as feature 0
+    const navigator = {
+      gpu: create([
+        "enable-dawn-features=allow_unsafe_apis,dump_shaders,disable_symbol_renaming",
+      ]),
+    };
+    const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
+    if (!adapter) throw new Error("No GPU adapter found");
 
-      if (!adapter) throw new Error("No GPU adapter found");
+    // Request device without specifying features or limits
+    const device = await(await navigator.gpu.requestAdapter()).requestDevice();
+    
+    const texture = device.createTexture({
+      format: "rgba8unorm",
+      usage: 0x10 | 0x04, // RENDER_ATTACHMENT | COPY_SRC
+      size: [width, height]
+    });
 
-      const device = await adapter.requestDevice(); // <- no options at all
+    console.log(`Virtual video memory initialized: ${width}x${height}`);
+    return { device, texture, width, height };
 
-      const texture = device.createTexture({
-        format: "rgba8unorm",
-        usage: 0x10 | 0x04, // RENDER_ATTACHMENT | COPY_SRC
-        size: [width, height]
-      });
-      console.log(`Virtual video memory initialized: ${width}x${height}`);
-      return { device, texture, width, height };
-    } catch (err) {
-      console.warn("WebGPU unavailable, using CPU fallback:", err.message);
-      return { device: null, texture: Buffer.alloc(width*height*4), width, height };
-    }
-  });
+  } catch (err) {
+    console.warn("WebGPU unavailable, using CPU fallback:", err.message);
+    return { device: null, texture: Buffer.alloc(width*height*4), width, height };
+  }
 }
 
 // --- Networked VRAM ---
@@ -179,7 +169,7 @@ async function main() {
   if(autoscale){
     let lastUsage = os.cpus().map(c=>c.times).reduce((acc,times)=>Object.values(times).reduce((a,b)=>a+b,0)+acc,0);
     setInterval(()=>{
-      const currUsage = os.cpus().map(c=>c.times).reduce((acc,times)=>Object.values(times).reduce((a,b)=>a+b,0)+acc,0);
+      const currUsage = os.cpus().map(c=>Object.values(times).reduce((a,b)=>a+b,0)+acc,0);
       // scaling logic omitted for brevity
     },2000);
   }

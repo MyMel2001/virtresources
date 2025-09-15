@@ -24,12 +24,6 @@ cd virtresources
 npm install
 ```
 
-> **Optional:** Install Vulkan for GPU-accelerated virtual video memory:
-
-```bash
-npm install node-vulkan
-```
-
 ---
 
 ## Usage

@@ -58,4 +58,17 @@ node virtresources.js --cpus 4 --gpu 256 ./workerApp
 
 ### Solo RAM only
 
+```bash
 node virtresources.js --ram 512 ./myapp --foo bar
+```
+
+### All resources together
+```bash
+node virtresources.js --ram 512 --gpu 128 --cpus 8 ./bigApp
+```
+
+### Autoscaling + logging
+
+```bash
+node virtresources.js --ram 256 --gpu 256 --cpus 2 --autoscale --log ./scaleTest
+```

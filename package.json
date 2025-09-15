@@ -9,8 +9,7 @@
     "make": "electron-forge make"
   },
   "dependencies": {
-    "@webgpu/types": "^0.1.64",
-    "pngjs": "^6.0.0"
+    "@tensorflow/tfjs": "^4.22.0"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.8.3",

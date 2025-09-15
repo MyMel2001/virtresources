@@ -1,223 +1,265 @@
-// virtresources
-// Virtual CPU, RAM, and GPU memory pools with optional networking.
-// Runs one child process (host mode) or connects to another (client mode).
-// ---------------------------------------------------------
+#!/usr/bin/env node
+// VirtResources: vCPU, RAM, GPU RAM (TensorFlow.js) simulation with networking and scaling
 
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import net from "net";
-import { GPU } from "gpu.js";
+import path from "path";
+import * as tf from "@tensorflow/tfjs";
 
-// -------------------- CLI Parsing --------------------
-function printHelp() {
-  console.log(`
-Usage:
-  node virtresources.js [options] <app> [args...]
+// -------------------- Helpers --------------------
 
-Options (at least one of --cpus, --ram, --gpu required unless --connect):
+function spawnWorkers(count, logUsage = false, summaryCollector = null, prefix = "local") {
+  const workers = [];
+  for (let i = 0; i < count; i++) {
+    const worker = new Worker(`
+      const { parentPort } = require("node:worker_threads");
+      let busyTicks = 0;
+      setInterval(() => { busyTicks++; }, 1000);
+      setInterval(() => {
+        parentPort.postMessage({ busyTicks });
+        busyTicks = 0;
+      }, 2000);
+    `, { eval: true });
 
-  --cpus <N>       Number of virtual CPU workers
-  --ram <MB>       Virtual RAM in megabytes
-  --gpu <MB>       Virtual GPU memory in megabytes
-  --listen <PORT>  Host mode: accept remote client writes
-  --connect <H:P>  Client mode: connect to host:port and send writes
-  --autoscale      Enable autoscaling for RAM/GPU pools
-  --log            Print worker usage summaries
-  --help           Show this help text
-
-Examples:
-  Host with RAM and CPU workers:
-    node virtresources.js --ram 512 --cpus 4 ./myapp --foo bar
-
-  Host with GPU pool and listen for clients:
-    node virtresources.js --gpu 256 --listen 9000 ./serverApp
-
-  Client only, connects and writes to host:
-    node virtresources.js --connect 127.0.0.1:9000 --cpus 2
-`);
-}
-
-function parseArgs(argv) {
-  const flags = {};
-  const positional = [];
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--help") { flags.help = true; continue; }
-    if (a === "--ram") { flags.ramMB = parseInt(argv[++i], 10); continue; }
-    if (a === "--gpu") { flags.gpuMB = parseInt(argv[++i], 10); continue; }
-    if (a === "--cpus") { flags.vcpus = parseInt(argv[++i], 10); continue; }
-    if (a === "--listen") { flags.listen = parseInt(argv[++i], 10); continue; }
-    if (a === "--connect") { flags.connect = argv[++i]; continue; }
-    if (a === "--autoscale") { flags.autoscale = true; continue; }
-    if (a === "--log") { flags.log = true; continue; }
-    else positional.push(a);
-  }
-  return { flags, positional };
-}
-
-function validateFlags(flags, positional) {
-  if (flags.help) return; // no validation needed
-
-  // require positive integers
-  if (flags.ramMB !== undefined && (!Number.isInteger(flags.ramMB) || flags.ramMB <= 0)) {
-    console.error("Error: --ram must be a positive integer (megabytes).");
-    process.exit(1);
-  }
-  if (flags.gpuMB !== undefined && (!Number.isInteger(flags.gpuMB) || flags.gpuMB <= 0)) {
-    console.error("Error: --gpu must be a positive integer (megabytes).");
-    process.exit(1);
-  }
-  if (flags.vcpus !== undefined && (!Number.isInteger(flags.vcpus) || flags.vcpus <= 0)) {
-    console.error("Error: --cpus must be a positive integer.");
-    process.exit(1);
-  }
-  if (flags.listen !== undefined && (!Number.isInteger(flags.listen) || flags.listen <= 0)) {
-    console.error("Error: --listen must be a positive integer port number.");
-    process.exit(1);
-  }
-  if (flags.connect && !/^[^:]+:\d+$/.test(flags.connect)) {
-    console.error("Error: --connect must be in host:port format.");
-    process.exit(1);
-  }
-
-  const inClientMode = !!flags.connect;
-  const inHostMode = !!flags.listen || positional.length > 0;
-
-  if (inClientMode && inHostMode) {
-    console.error("Error: Cannot use both --connect (client) and host mode flags (--listen or app).");
-    process.exit(1);
-  }
-
-  if (inHostMode && !inClientMode) {
-    if (!flags.vcpus && !flags.ramMB && !flags.gpuMB) {
-      console.error("Error: In host mode you must specify at least one resource (--cpus, --ram, or --gpu).");
-      process.exit(1);
+    if (logUsage && summaryCollector) {
+      worker.on("message", (msg) => summaryCollector.add(`${prefix}-${i}`, msg.busyTicks));
     }
-    if (positional.length === 0) {
-      console.error("Error: In host mode you must specify an <app> to run.");
-      process.exit(1);
-    }
+
+    workers.push(worker);
+  }
+  return workers;
+}
+
+class WorkerSummary {
+  constructor(interval = 2000) {
+    this.stats = {};
+    setInterval(() => this.printSummary(), interval);
   }
 
-  if (inClientMode && positional.length > 0) {
-    console.error("Error: In client mode (--connect) you cannot specify an app to run.");
-    process.exit(1);
+  add(id, ticks) { this.stats[id] = ticks; }
+
+  printSummary() {
+    const entries = Object.entries(this.stats);
+    const local = entries.filter(([id]) => id.startsWith("local-"));
+    const remote = entries.filter(([id]) => id.startsWith("remote-"));
+    const sumTicks = (arr) => arr.reduce((a, [,v]) => a+v, 0);
+    const activeCount = (arr) => arr.filter(([,v]) => v>0).length;
+
+    console.log(`[Summary] Local: ${activeCount(local)} workers, ${sumTicks(local)} ticks | ` +
+                `Remote: ${activeCount(remote)} workers, ${sumTicks(remote)} ticks`);
+    this.stats = {};
   }
 }
 
-// -------------------- Resource Pools --------------------
+function getCpuUsage() {
+  const cpus = os.cpus();
+  let totalIdle = 0, totalTick = 0;
+  for (const cpu of cpus) {
+    for (const type in cpu.times) totalTick += cpu.times[type];
+    totalIdle += cpu.times.idle;
+  }
+  return { totalIdle, totalTick };
+}
+
+function isCLI(appPath) {
+  const ext = path.extname(appPath).toLowerCase();
+  if (process.platform === "win32") return ext === ".exe" || ext === ".bat" || ext === ".cmd";
+  return true;
+}
+
+// -------------------- Virtual RAM --------------------
+
 class VirtualRAM {
-  constructor(sizeMB, autoscale = false) {
+  constructor(sizeMB = 512, name = "VirtualRAM") {
     this.size = sizeMB * 1024 * 1024;
     this.buffer = Buffer.alloc(this.size);
-    this.autoscale = autoscale;
-    console.log(`Virtual RAM initialized (${sizeMB} MB)`);
+    this.name = name;
+    console.log(`[${this.name}] Allocated ${sizeMB} MB of virtual RAM`);
   }
 
   write(offset, data) {
-    data.copy(this.buffer, offset, 0, Math.min(data.length, this.size - offset));
+    if (offset + data.length > this.size) throw new Error("Out of bounds write");
+    data.copy(this.buffer, offset);
   }
 
   read(offset, length) {
-    return this.buffer.slice(offset, offset + length);
+    if (offset + length > this.size) throw new Error("Out of bounds read");
+    return this.buffer.slice(offset, offset+length);
+  }
+
+  fill(value) {
+    this.buffer.fill(value);
   }
 }
+
+// -------------------- Virtual GPU RAM --------------------
 
 class VirtualGPURAM {
-  constructor(sizeMB, autoscale = false) {
-    this.sizeMB = sizeMB;
-    this.autoscale = autoscale;
+  constructor(sizeMB = 256, name = "VirtualGPURAM") {
     this.size = sizeMB * 1024 * 1024;
-    this.gpu = new GPU();
-    this.bufferLength = this.size;
-    this.kernel = this.gpu.createKernel(function() { return 0; })
-      .setOutput([this.bufferLength]);
-    this.buffer = this.kernel();
-    console.log(`Virtual GPU memory initialized (${sizeMB} MB, ${this.bufferLength} elements)`);
+    this.tensor = tf.tensor(new Float32Array(this.size), [this.size]);
+    this.name = name;
+    console.log(`[${this.name}] Allocated ${sizeMB} MB of virtual GPU memory`);
   }
 
   write(offset, data) {
-    for (let i = 0; i < data.length && i + offset < this.bufferLength; i++) {
-      this.buffer[i + offset] = data[i];
-    }
+    if (offset + data.length > this.size) throw new Error("Out of bounds write");
+    const sub = tf.tensor(data);
+    this.tensor = tf.concat([
+      this.tensor.slice([0],[offset]),
+      sub,
+      this.tensor.slice([offset+data.length])
+    ]);
   }
 
   read(offset, length) {
-    const out = new Uint8Array(length);
-    for (let i = 0; i < length && i + offset < this.bufferLength; i++) {
-      out[i] = this.buffer[i];
-    }
-    return out;
+    if (offset + length > this.size) throw new Error("Out of bounds read");
+    return this.tensor.slice([offset], [length]).dataSync();
+  }
+
+  fill(value) {
+    this.tensor = tf.fill([this.size], value);
+  }
+
+  compute(fn) {
+    this.tensor = fn(this.tensor);
   }
 }
 
-class VirtualCPUs {
-  constructor(n, log = false) {
-    this.count = n;
-    this.workers = [];
-    for (let i = 0; i < n; i++) {
-      const w = new Worker(`setInterval(() => {}, 1000);`, { eval: true });
-      this.workers.push(w);
-    }
-    console.log(`Virtual CPUs initialized (${n} workers)`);
-    if (log) {
-      setInterval(() => console.log("vCPU workers active:", this.workers.length), 5000);
+// -------------------- Networked Memory & vCPUs --------------------
+
+class NetworkedResource {
+  constructor(localResource, listenPort = null, type="RAM") {
+    this.localResource = localResource;
+    this.type = type;
+    this.clients = [];
+
+    if(listenPort){
+      const server = net.createServer(socket => {
+        console.log(`Networked client connected for ${type}`);
+
+        let buffer = "";
+        socket.on("data", (data) => {
+          buffer += data.toString();
+          let lines = buffer.split("\n");
+          buffer = lines.pop();
+
+          for(const line of lines){
+            if(!line.trim()) continue;
+            try{
+              const msg = JSON.parse(line);
+
+              if(msg.type==="vCPU" && type==="CPU" && msg.count>0){
+                console.log(`Client contributes ${msg.count} vCPUs`);
+                spawnWorkers(msg.count, true, summaryCollector, "remote");
+              }
+
+              if(msg.type==="write" && localResource){
+                localResource.write(msg.offset, Buffer.from(msg.data));
+              }
+
+              if(msg.type==="writeGPU" && localResource){
+                localResource.write(msg.offset, msg.data);
+              }
+
+            }catch(e){ console.error("Invalid message from client:", e);}
+          }
+        });
+
+        socket.on("end", () => {
+          console.log("Client disconnected from networked resource");
+        });
+
+        this.clients.push(socket);
+      });
+
+      server.listen(listenPort, ()=>console.log(`Listening for remote clients on port ${listenPort} (${type})`));
     }
   }
-}
-
-// -------------------- Networking --------------------
-function startServer(port, vram, vgpu) {
-  const server = net.createServer((sock) => {
-    sock.on("data", (data) => {
-      if (vram) vram.write(0, data);
-      if (vgpu) vgpu.write(0, data);
-      console.log("Received data from client:", data.length);
-    });
-  });
-  server.listen(port, () => console.log(`Listening for clients on port ${port}`));
-}
-
-function startClient(addr) {
-  const [host, port] = addr.split(":");
-  const sock = net.createConnection({ host, port: parseInt(port, 10) }, () => {
-    console.log(`Connected to host ${addr}`);
-    setInterval(() => sock.write(Buffer.from("heartbeat")), 5000);
-  });
 }
 
 // -------------------- Main --------------------
-async function main() {
-  const argv = process.argv.slice(2);
-  const { flags, positional } = parseArgs(argv);
 
-  if (flags.help) {
-    printHelp();
-    process.exit(0);
+async function main(){
+  const args = process.argv.slice(2);
+  if(args.length<1){
+    console.log("Usage:\n Host: virtresources <app> [vcpus] [--autoscale] [--log] [--listen <port>] [--ram <mb>] [--gpu <mb>] [app_args...]\n Client: virtresources --connect <host>:<port> [vcpus] [--autoscale] [--log]");
+    process.exit(1);
   }
 
-  validateFlags(flags, positional);
+  let app=null, vcpus=os.cpus().length, autoscale=false, logUsage=false;
+  let appArgs=[], listenPort=null, connectTarget=null;
+  let ramMB=512, gpuMB=0;
 
-  let vram, vgpu, vcpus;
-  if (flags.ramMB) vram = new VirtualRAM(flags.ramMB, flags.autoscale);
-  if (flags.gpuMB) vgpu = new VirtualGPURAM(flags.gpuMB, flags.autoscale);
-  if (flags.vcpus) vcpus = new VirtualCPUs(flags.vcpus, flags.log);
-
-  if (flags.listen) startServer(flags.listen, vram, vgpu);
-  if (flags.connect) {
-    startClient(flags.connect);
-    return;
+  for(let i=0;i<args.length;i++){
+    if(args[i]=="--autoscale") autoscale=true;
+    else if(args[i]=="--log") logUsage=true;
+    else if(args[i]=="--listen") listenPort=parseInt(args[++i]);
+    else if(args[i]=="--connect") connectTarget=args[++i];
+    else if(args[i]=="--ram") ramMB=parseInt(args[++i]);
+    else if(args[i]=="--gpu") gpuMB=parseInt(args[++i]);
+    else if(!isNaN(parseInt(args[i]))) vcpus=parseInt(args[i]);
+    else if(!app) app=args[i];
+    else appArgs.push(args[i]);
   }
 
-  // Spawn child process with inherited stdio
-  const app = positional[0];
-  const args = positional.slice(1);
-  const child = spawn(app, args, { stdio: "inherit" });
-  child.on("exit", code => { console.log(`Child exited with code ${code}`); process.exit(code); });
+  if(vcpus<=0 && ramMB<=0 && gpuMB<=0){
+    console.error("❌ Must allocate at least one resource (vCPU, RAM, or GPU RAM)");
+    process.exit(1);
+  }
+
+  const summaryCollector = logUsage ? new WorkerSummary() : null;
+
+  const localRAM = ramMB>0 ? new VirtualRAM(ramMB) : null;
+  const localVV  = gpuMB>0 ? new VirtualGPURAM(gpuMB) : null;
+
+  // Networked resources
+  const networkedCPU = listenPort && vcpus>0 ? new NetworkedResource(null, listenPort, "CPU") : null;
+  const networkedRAM = listenPort && localRAM ? new NetworkedResource(localRAM, listenPort, "RAM") : null;
+  const networkedVV  = listenPort && localVV ? new NetworkedResource(localVV, listenPort, "GPU") : null;
+
+  // Client Mode
+  if(connectTarget){
+    const [host, portStr] = connectTarget.split(":");
+    const port = parseInt(portStr,10);
+    const socket = net.createConnection({host,port},()=>console.log(`[Client] Connected to host ${host}:${port}`));
+
+    // Send vCPU count
+    socket.write(JSON.stringify({type:"vCPU", count:vcpus})+"\n");
+
+    const workers = spawnWorkers(vcpus, logUsage, {
+      add: (id, ticks)=>socket.write(JSON.stringify({ type:"ticks", id, ticks })+"\n")
+    }, "remote");
+
+    await new Promise(()=>{}); // keep alive
+  }
+
+  // Host Mode
+  if(!app){
+    console.error("Host mode requires an application to run.");
+    process.exit(1);
+  }
+
+  spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
+  const workers = spawnWorkers(vcpus, logUsage, summaryCollector, "local");
+
+  if(autoscale){
+    let lastUsage = getCpuUsage();
+    setInterval(()=>{
+      const currUsage = getCpuUsage();
+      const idleDiff = currUsage.totalIdle - lastUsage.totalIdle;
+      const totalDiff = currUsage.totalTick - lastUsage.totalTick;
+      const load = 1 - idleDiff/totalDiff;
+      lastUsage = currUsage;
+
+      const desiredVCPUs = Math.max(1, Math.min(os.cpus().length*2, Math.round(load*os.cpus().length*2)));
+      const diff = desiredVCPUs - workers.length;
+      if(diff>0) workers.push(...spawnWorkers(diff, logUsage, summaryCollector, "local"));
+      else if(diff<0) for(let i=0;i<-diff;i++) workers.pop().terminate();
+    },2000);
+  }
 }
 
-main().catch(err => {
-  console.error("Fatal error:", err && err.stack ? err.stack : err);
-  process.exit(1);
-});
+main();

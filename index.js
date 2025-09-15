@@ -1,3 +1,4 @@
+//VirtResources
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
@@ -62,10 +63,11 @@ class VirtualRAM {
 async function initVirtualVideoMemory(width=256, height=256) {
   try {
     const navigator = { gpu: create([]) };
-    const adapter = await navigator.gpu?.requestAdapter();
+    const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("No GPU adapter found");
 
-    const device = await adapter.requestDevice();
+    // Request device explicitly without optional features
+    const device = await adapter.requestDevice({ requiredFeatures: [] });
     const texture = device.createTexture({
       format: "rgba8unorm",
       usage: 0x10 | 0x04, // RENDER_ATTACHMENT | COPY_SRC
@@ -78,6 +80,7 @@ async function initVirtualVideoMemory(width=256, height=256) {
     return null;
   }
 }
+
 
 // --- Networked VRAM ---
 class NetworkedVRAM {

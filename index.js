@@ -127,7 +127,7 @@ class VirtualGPURAM {
   async init() {
     const navigator = {
       gpu: create([
-        "enable-dawn-features=allow_unsafe_apis,dump_shaders,disable_symbol_renaming",
+        "backend=vulkan enable-dawn-features=allow_unsafe_apis,dump_shaders,disable_symbol_renaming",
       ]),
     };
     const adapter = navigator.gpu.requestAdapter({

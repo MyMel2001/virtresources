@@ -128,55 +128,48 @@ class VirtualGPURAM {
   }
 }
 
-// -------------------- Networked Memory & vCPUs --------------------
+// -------------------- Network Server --------------------
 
-class NetworkedResource {
-  constructor(localResource, listenPort = null, type="RAM") {
-    this.localResource = localResource;
-    this.type = type;
+class NetworkServer {
+  constructor(listenPort) {
+    this.listenPort = listenPort;
     this.clients = [];
+    this.resources = []; // All registered resources: CPU, RAM, GPU
 
-    if(listenPort){
-      const server = net.createServer(socket => {
-        console.log(`Networked client connected for ${type}`);
+    this.server = net.createServer(socket => {
+      console.log("Remote client connected");
+      this.clients.push(socket);
 
-        let buffer = "";
-        socket.on("data", (data) => {
-          buffer += data.toString();
-          let lines = buffer.split("\n");
-          buffer = lines.pop();
+      let buffer = "";
+      socket.on("data", (data) => {
+        buffer += data.toString();
+        let lines = buffer.split("\n");
+        buffer = lines.pop();
 
-          for(const line of lines){
-            if(!line.trim()) continue;
-            try{
-              const msg = JSON.parse(line);
-
-              if(msg.type==="vCPU" && type==="CPU" && msg.count>0){
-                console.log(`Client contributes ${msg.count} vCPUs`);
-                spawnWorkers(msg.count, true, summaryCollector, "remote");
-              }
-
-              if(msg.type==="write" && localResource){
-                localResource.write(msg.offset, Buffer.from(msg.data));
-              }
-
-              if(msg.type==="writeGPU" && localResource){
-                localResource.write(msg.offset, msg.data);
-              }
-
-            }catch(e){ console.error("Invalid message from client:", e);}
+        for(const line of lines){
+          if(!line.trim()) continue;
+          try{
+            const msg = JSON.parse(line);
+            for(const res of this.resources){
+              res.handleMessage(msg, socket);
+            }
+          }catch(e){
+            console.error("Invalid client message", e);
           }
-        });
-
-        socket.on("end", () => {
-          console.log("Client disconnected from networked resource");
-        });
-
-        this.clients.push(socket);
+        }
       });
 
-      server.listen(listenPort, ()=>console.log(`Listening for remote clients on port ${listenPort} (${type})`));
-    }
+      socket.on("end", () => {
+        console.log("Client disconnected");
+        this.clients = this.clients.filter(c=>c!==socket);
+      });
+    });
+
+    this.server.listen(listenPort, () => console.log(`Listening for remote clients on port ${listenPort}`));
+  }
+
+  registerResource(resource) {
+    this.resources.push(resource);
   }
 }
 
@@ -211,16 +204,35 @@ async function main(){
   }
 
   const summaryCollector = logUsage ? new WorkerSummary() : null;
-
   const localRAM = ramMB>0 ? new VirtualRAM(ramMB) : null;
   const localVV  = gpuMB>0 ? new VirtualGPURAM(gpuMB) : null;
 
-  // Networked resources
-  const networkedCPU = listenPort && vcpus>0 ? new NetworkedResource(null, listenPort, "CPU") : null;
-  const networkedRAM = listenPort && localRAM ? new NetworkedResource(localRAM, listenPort, "RAM") : null;
-  const networkedVV  = listenPort && localVV ? new NetworkedResource(localVV, listenPort, "GPU") : null;
+  // -------------------- Network --------------------
+  const netServer = listenPort ? new NetworkServer(listenPort) : null;
 
-  // Client Mode
+  if(localRAM && netServer){
+    localRAM.handleMessage = (msg)=>{
+      if(msg.type==="write") localRAM.write(msg.offset, Buffer.from(msg.data));
+    };
+    netServer.registerResource(localRAM);
+  }
+
+  if(localVV && netServer){
+    localVV.handleMessage = (msg)=>{
+      if(msg.type==="writeGPU") localVV.write(msg.offset, msg.data);
+    };
+    netServer.registerResource(localVV);
+  }
+
+  if(vcpus>0 && netServer){
+    netServer.registerResource({
+      handleMessage: (msg)=>{
+        if(msg.type==="vCPU") spawnWorkers(msg.count, logUsage, summaryCollector,"remote");
+      }
+    });
+  }
+
+  // -------------------- Client Mode --------------------
   if(connectTarget){
     const [host, portStr] = connectTarget.split(":");
     const port = parseInt(portStr,10);
@@ -236,7 +248,7 @@ async function main(){
     await new Promise(()=>{}); // keep alive
   }
 
-  // Host Mode
+  // -------------------- Host Mode --------------------
   if(!app){
     console.error("Host mode requires an application to run.");
     process.exit(1);
@@ -245,6 +257,7 @@ async function main(){
   spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
   const workers = spawnWorkers(vcpus, logUsage, summaryCollector, "local");
 
+  // Auto-scaling
   if(autoscale){
     let lastUsage = getCpuUsage();
     setInterval(()=>{

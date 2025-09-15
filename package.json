@@ -1,6 +1,6 @@
 {
   "name": "virtresources",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -9,7 +9,8 @@
     "make": "electron-forge make"
   },
   "dependencies": {
-    "node-vulkan": "^0.0.7"
+    "@webgpu/types": "^1.0.0",
+    "webgpu": "^0.3.0"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.8.3",

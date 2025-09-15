@@ -1,43 +1,244 @@
-import { exec } from "node:child_process";
+// VirtResources: vCPUs + vRAM + vVM
+// Host:   node index.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [--vram <MB>] [--vvm <MB>] [app_args...]
+// Client: node index.js --connect <host>:<port> [vcpus] [--autoscale] [--log] [--vram <MB>] [--vvm <MB>]
+
+import { spawn } from "node:child_process";
+import { Worker } from "node:worker_threads";
 import os from "node:os";
-import path from "node:path";
+import path from "path";
+import net from "net";
 
-// Detect OS
-const platform = os.platform();
-console.log(`Detected platform: ${platform}`);
+// --- Helpers ---
+function spawnWorkers(count, logUsage = false, summaryCollector = null, prefix = "local") {
+  console.log(`Spawning ${count} ${prefix} virtual CPUs...`);
+  const workers = [];
+  for (let i = 0; i < count; i++) {
+    const worker = new Worker(
+      `
+      import { parentPort } from "node:worker_threads";
+      let busyTicks = 0;
+      setInterval(() => { busyTicks++; }, 1000);
+      parentPort.on("message", () => {});
+      setInterval(() => {
+        parentPort.postMessage({ busyTicks });
+        busyTicks = 0;
+      }, 2000);
+      `,
+      { eval: true, type: "module" }
+    );
 
-// Function to run shell commands
-function runCommand(cmd, cwd = process.cwd()) {
-  return new Promise((resolve, reject) => {
-    const proc = exec(cmd, { cwd }, (error, stdout, stderr) => {
-      if (error) return reject({ error, stdout, stderr });
-      resolve({ stdout, stderr });
-    });
-    proc.stdout.pipe(process.stdout);
-    proc.stderr.pipe(process.stderr);
-  });
+    if (logUsage && summaryCollector) {
+      worker.on("message", (msg) => {
+        summaryCollector.add(`${prefix}-${i}`, msg.busyTicks);
+      });
+    }
+
+    workers.push(worker);
+  }
+  return workers;
 }
 
-// Check Vulkan SDK environment variable
-const vulkanEnvVar = platform === "win32" ? "VULKAN_SDK" : "VULKAN_SDK";
-const vulkanPath = process.env[vulkanEnvVar];
+class WorkerSummary {
+  constructor(interval = 2000) {
+    this.stats = {};
+    setInterval(() => this.printSummary(), interval);
+  }
 
-if (!vulkanPath) {
-  console.error(`❌ Vulkan SDK not found! Please install it and set ${vulkanEnvVar}.`);
-  process.exit(1);
+  add(id, ticks) {
+    this.stats[id] = ticks;
+  }
+
+  printSummary() {
+    const entries = Object.entries(this.stats);
+    const local = entries.filter(([id]) => id.startsWith("local-"));
+    const remote = entries.filter(([id]) => id.startsWith("remote-"));
+    const sumTicks = (arr) => arr.reduce((a, [, v]) => a + v, 0);
+    const activeCount = (arr) => arr.filter(([, v]) => v > 0).length;
+
+    const localTicks = sumTicks(local);
+    const remoteTicks = sumTicks(remote);
+    const totalTicks = localTicks + remoteTicks;
+    const localActive = activeCount(local);
+    const remoteActive = activeCount(remote);
+    const totalActive = localActive + remoteActive;
+
+    console.log(
+      `[Summary] Local: ${localActive} workers, ${localTicks} ticks | ` +
+      `Remote: ${remoteActive} workers, ${remoteTicks} ticks | ` +
+      `Total: ${totalActive} workers, ${totalTicks} ticks`
+    );
+  }
 }
 
-console.log(`Found Vulkan SDK at: ${vulkanPath}`);
-console.log("Building node-vulkan...");
+function getCpuUsage() {
+  const cpus = os.cpus();
+  let totalIdle = 0, totalTick = 0;
+  for (const cpu of cpus) {
+    for (const type in cpu.times) totalTick += cpu.times[type];
+    totalIdle += cpu.times.idle;
+  }
+  return { totalIdle, totalTick };
+}
 
-(async () => {
-  try {
-    // Install node-vulkan native bindings
-    await runCommand("npm rebuild node-vulkan");
-    console.log("✅ node-vulkan successfully built with Vulkan SDK.");
-  } catch (err) {
-    console.error("❌ Failed to build node-vulkan:");
-    console.error(err.stderr || err.error);
+function isCLI(appPath) {
+  const ext = path.extname(appPath).toLowerCase();
+  if (process.platform === "win32") return ext === ".exe" || ext === ".bat" || ext === ".cmd";
+  return true;
+}
+
+// --- Main ---
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length < 1) {
+    console.log("Usage:");
+    console.log("  Host:   node index.js <app> [vcpus] [--autoscale] [--log] [--listen <port>] [--vram <MB>] [--vvm <MB>] [app_args...]");
+    console.log("  Client: node index.js --connect <host>:<port> [vcpus] [--autoscale] [--log] [--vram <MB>] [--vvm <MB>]");
     process.exit(1);
   }
-})();
+
+  let app = null;
+  let virtualCpus = os.cpus().length;
+  let autoscale = false;
+  let logUsage = false;
+  let appArgs = [];
+  let listenPort = null;
+  let connectTarget = null;
+  let vramMB = 0;
+  let vvmMB = 0;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--autoscale") autoscale = true;
+    else if (args[i] === "--log") logUsage = true;
+    else if (args[i] === "--listen") listenPort = parseInt(args[++i], 10);
+    else if (args[i] === "--connect") connectTarget = args[++i];
+    else if (args[i] === "--vram") vramMB = parseInt(args[++i], 10);
+    else if (args[i] === "--vvm") vvmMB = parseInt(args[++i], 10);
+    else if (!isNaN(parseInt(args[i]))) virtualCpus = parseInt(args[i], 10);
+    else if (!app) app = args[i];
+    else appArgs.push(args[i]);
+  }
+
+  // --- Client Mode ---
+  if (connectTarget) {
+    if (app || appArgs.length > 0 || listenPort) {
+      console.error("❌ In client mode you cannot specify app, app args, or --listen");
+      process.exit(1);
+    }
+
+    const [host, portStr] = connectTarget.split(":");
+    const port = parseInt(portStr, 10);
+    const socket = net.createConnection({ host, port }, () => {
+      console.log(`[Client] Connected to host ${host}:${port}`);
+      console.log(`[Client] Virtual CPUs: ${virtualCpus}, vRAM: ${vramMB}MB, vVM: ${vvmMB}MB`);
+    });
+
+    const summaryCollector = {
+      add: (id, ticks) => {
+        socket.write(JSON.stringify({ id: `remote-${id}`, ticks }) + "\n");
+      }
+    };
+
+    // Allocate virtual RAM
+    const virtualRAM = vramMB > 0 ? Buffer.alloc(vramMB * 1024 * 1024) : null;
+
+    // Allocate virtual video memory
+    const virtualVideoMemory = vvmMB > 0 ? Buffer.alloc(vvmMB * 1024 * 1024) : null;
+
+    const workers = spawnWorkers(virtualCpus, logUsage, summaryCollector, "remote");
+
+    // Auto-scaling similar to vCPUs
+    if (autoscale) {
+      let lastUsage = getCpuUsage();
+      setInterval(() => {
+        const currUsage = getCpuUsage();
+        const idleDiff = currUsage.totalIdle - lastUsage.totalIdle;
+        const totalDiff = currUsage.totalTick - lastUsage.totalTick;
+        const load = 1 - idleDiff / totalDiff;
+        lastUsage = currUsage;
+
+        const desiredVCPUs = Math.max(1, Math.min(os.cpus().length * 2, Math.round(load * os.cpus().length * 2)));
+        const diff = desiredVCPUs - workers.length;
+        if (diff > 0) workers.push(...spawnWorkers(diff, logUsage, summaryCollector, "remote"));
+        else if (diff < 0) for (let i = 0; i < -diff; i++) workers.pop().terminate();
+      }, 2000);
+    }
+
+    process.on("SIGINT", () => {
+      console.log("Client shutting down...");
+      workers.forEach(w => w.terminate());
+      socket.end();
+      process.exit(0);
+    });
+
+    await new Promise(() => {}); // keep client alive
+  }
+
+  // --- Host Mode ---
+  if (!app) {
+    console.error("❌ Host mode requires an application to run.");
+    process.exit(1);
+  }
+
+  console.log(`Host: ${os.cpus().length} cores detected. Using ${virtualCpus} vCPUs`);
+  console.log(`vRAM: ${vramMB}MB, vVM: ${vvmMB}MB, Autoscale: ${autoscale}, Logging: ${logUsage}`);
+
+  const cliMode = isCLI(app);
+  const stdioOption = cliMode ? "inherit" : "inherit";
+
+  const appProc = spawn(app, appArgs, { stdio: stdioOption, shell: process.platform !== "win32" });
+
+  appProc.on("exit", (code) => {
+    console.log(`App exited with code ${code}`);
+    process.exit(code);
+  });
+
+  const summaryCollector = logUsage ? new WorkerSummary() : null;
+  const workers = spawnWorkers(virtualCpus, logUsage, summaryCollector, "local");
+
+  // Allocate virtual RAM
+  const virtualRAM = vramMB > 0 ? Buffer.alloc(vramMB * 1024 * 1024) : null;
+  const virtualVideoMemory = vvmMB > 0 ? Buffer.alloc(vvmMB * 1024 * 1024) : null;
+
+  // Auto-scaling
+  if (autoscale) {
+    let lastUsage = getCpuUsage();
+    setInterval(() => {
+      const currUsage = getCpuUsage();
+      const idleDiff = currUsage.totalIdle - lastUsage.totalIdle;
+      const totalDiff = currUsage.totalTick - lastUsage.totalTick;
+      const load = 1 - idleDiff / totalDiff;
+      lastUsage = currUsage;
+
+      const desiredVCPUs = Math.max(1, Math.min(os.cpus().length * 2, Math.round(load * os.cpus().length * 2)));
+      const diff = desiredVCPUs - workers.length;
+      if (diff > 0) workers.push(...spawnWorkers(diff, logUsage, summaryCollector, "local"));
+      else if (diff < 0) for (let i = 0; i < -diff; i++) workers.pop().terminate();
+    }, 2000);
+  }
+
+  // Network listener for remote clients
+  if (listenPort) {
+    const server = net.createServer((socket) => {
+      console.log("Remote client connected.");
+      let buffer = "";
+      socket.on("data", (data) => {
+        buffer += data.toString();
+        let lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const msg = JSON.parse(line);
+            if (logUsage && summaryCollector) summaryCollector.add(msg.id, msg.ticks);
+          } catch (e) {
+            console.error("Invalid message from client:", line);
+          }
+        }
+      });
+      socket.on("end", () => console.log("Remote client disconnected."));
+    });
+    server.listen(listenPort, () => console.log(`Listening for remote clients on port ${listenPort}...`));
+  }
+}
+
+main();

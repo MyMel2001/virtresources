@@ -7,7 +7,6 @@
     "start": "node index.js",
     "package": "electron-forge package --platform=win32,darwin,linux",
     "make": "electron-forge make",
-    "postinstall": "node scripts/build-vulkan.js"
   },
   "dependencies": {
     "node-vulkan": "^0.0.7"

@@ -11,6 +11,12 @@ import { create, globals } from "webgpu";
 
 Object.assign(globalThis, globals); // expose GPUBufferUsage, GPUMapMode, etc.
 
+const navigator = {
+  gpu: create([
+    "enable-dawn-features=allow_unsafe_apis,dump_shaders,disable_symbol_renaming",
+  ]),
+};
+
 // -------------------- CLI Parsing --------------------
 function printHelp() {
   console.log(`
@@ -125,8 +131,6 @@ class VirtualGPURAM {
     this.init();
   }
   async init() {
-    Object.assign(globalThis, globals);
-    const navigator = { gpu: create(['backend=opengl']) };
     const adapter = navigator.gpu.requestAdapter({
       powerPreference: 'high-performance', // or 'low-power'
     });

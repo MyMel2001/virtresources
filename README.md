@@ -1,76 +1,63 @@
-# VirtCPUs  
-Simulate extra virtual CPUs for any external application (CLI or GUI) using Node.js worker threads.  
+# VirtResources
 
-This wrapper launches an app and spawns additional “virtual CPU” threads, giving the OS scheduler more contexts to work with.  
-Useful for apps that benefit from parallelism (e.g., JVM apps like Minecraft Java) without modifying them.  
-
----
-
-## How it works
-* You run your app under this wrapper.
-* The wrapper spawns N worker threads (your “virtual CPUs”).
-* The wrapper intercepts the app’s stdout, stdin, socket traffic, etc(?).
-* It distributes chunks of work to those worker threads.
-* The workers do the CPU-bound part, then send results back to the app.
-
-So the external app’s workload is effectively parallelized without it knowing.
+**VirtResources** is a cross-platform Node.js tool for simulating additional system resources, including virtual CPUs, virtual RAM, and virtual video memory (vVM). It supports both **local** and **networked modes**, allowing multiple computers to pool their resources into a single virtualized system environment.
 
 ---
 
 ## Features
-- Works with **CLI and GUI apps** (keeps them attached).  
-- Supports **custom virtual CPU counts**.  
-- **Auto-scaling mode** adjusts virtual CPUs dynamically based on load.  
-- Optional **logging**: see per-worker summaries in real time.  
-- Cross-platform: **Windows, macOS, Linux**.  
-- Packaged with **Electron Forge** for easy distribution.  
+
+- **Virtual CPUs (vCPU)**: Simulate extra CPU threads to enhance application parallelism.  
+- **Virtual RAM (vRAM)**: Allocate virtual CPU memory, usable locally or pooled over networked machines.  
+- **Virtual Video Memory (vVM)**: Allocate virtual GPU memory, optionally accelerated using Vulkan. Networked mode allows multiple machines to combine GPU memory.  
+- **Networked Resource Sharing**: Connect clients to a host to combine CPU, RAM, and vVM resources across machines.  
+- **Auto-Scaling**: Optional auto-adjustment of virtual CPUs based on system load.  
+- **Cross-Platform**: Works on Windows, macOS, and Linux.  
+- **GUI Support**: Applications with GUIs remain attached to the terminal or desktop.  
+
+---
+
+## Installation
+
+```bash
+git clone <repo-url>
+cd virtresources
+npm install
+```
+
+> **Optional:** Install Vulkan for GPU-accelerated virtual video memory:
+
+```bash
+npm install node-vulkan
+```
 
 ---
 
 ## Usage
-### Command
-```bash
-virtcpus <app> [virtual_cpus] [--autoscale] [--log] [app_args...]
-```
 
-## Examples
+### Host Mode
 
-* Run CLI app with default cores:
-```bash
-virtcpus ./myCLIApp
-```
-* Run GUI app (Windows example) with 12 virtual CPUs:
-```batch
-virtcpus notepad.exe 12
-```
-* Enable auto-scaling and logging:
-```
-virtcpus ./myApp 8 --autoscale --log
-```
-
-## Building
-
-This project is packaged with Electron Forge for convenience.
-
-* Install dependencies:
-```bash
-npm install
-```
-* Run locally:
+The host runs the main application and listens for remote clients:
 
 ```bash
-npm start
+node index.js "<app_command>" [vcpus] [--vram <MB>] [--vvm <MB>] [--autoscale] [--log] [--listen <port>] [app_args...]
 ```
-* Package into a binary (all platforms):
+
+**Example:**
 
 ```bash
-npm run package
+node index.js "java -jar MyGame.jar" 8 --vram 2048 --vvm 1024 --autoscale --log --listen 4020
 ```
 
-Resulting binaries will be in the out/ folder.
+### Client Mode
 
-## Notes
+Clients connect to a host to contribute resources:
 
-* Virtual CPUs ≠ number of physical cores detected.
-* More virtual CPUs ≠ always better — test with your app to find the sweet spot.
-* Overhead is minimal, but spawning too many workers can cause OS context-switching slowdown.
+```bash
+node index.js --connect <host_ip>:<port> [vcpus] [--vram <MB>] [--vvm <MB>] [--autoscale] [--log]
+```
+
+**Example:**
+
+```bash
+node index.js --connect 192.168.50.100:4020 4 --vram 1024 --vvm 512 --autoscale --log
+```

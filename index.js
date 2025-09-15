@@ -73,10 +73,9 @@ function isCLI(appPath) {
 
 class VirtualRAM {
   constructor(sizeMB = 512, name = "VirtualRAM") {
-    this.size = sizeMB * 1024 * 1024;
-    this.buffer = Buffer.alloc(this.size);
-    this.name = name;
-    console.log(`[${this.name}] Allocated ${sizeMB} MB of virtual RAM`);
+    this.sizeMB = sizeMB;
+    this.buffer = Buffer.alloc(sizeMB * 1024 * 1024);
+    console.log(`[VirtualRAM] Allocated ${sizeMB} MB`);
   }
 
   write(offset, data) {
@@ -205,6 +204,7 @@ async function main(){
 
   const summaryCollector = logUsage ? new WorkerSummary() : null;
   const localRAM = ramMB>0 ? new VirtualRAM(ramMB) : null;
+  console.log(`[Init] Virtual RAM ready: ${ramMB} MB`);
   const localVV  = gpuMB>0 ? new VirtualGPURAM(gpuMB) : null;
 
   // -------------------- Network --------------------

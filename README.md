@@ -35,7 +35,7 @@ The host runs the main application and listens for remote clients:
 **Example:**
 
 ```bash
-node virtresources.js --ram 1024 --listen 9000 ./serverApp
+node virtresources.js ./serverApp --ram 1024 --listen 9000
 ```
 
 ### Client Mode
@@ -53,28 +53,28 @@ node virtresources.js --connect 127.0.0.1:9000 --cpus 2
 **Example:**
 
 ```bash
-node virtresources.js --cpus 4 --gpu 256 ./workerApp
+node virtresources.js ./workerApp --cpus 4 --gpu 256
 ```
 
-### Solo RAM only
+### Solo RAM only /w App Args
 
 ```bash
-node virtresources.js --ram 512 ./myapp --foo bar
+node virtresources.js ./myapp --foo bar --ram 512 
 ```
 
 ### All resources together
 ```bash
-node virtresources.js --ram 512 --gpu 128 --cpus 8 ./bigApp
+node virtresources.js ./bigApp --ram 512 --gpu 128 --cpus 8 
 ```
 
 ### Autoscaling + logging
 
 ```bash
-node virtresources.js --ram 256 --gpu 256 --cpus 2 --autoscale --log ./scaleTest
+node virtresources.js ./scaleTest --ram 256 --gpu 256 --cpus 2 --autoscale --log
 ```
 
 ### Ultra host computer.
 
 ```bash
-node virtresources.js --ram 256 --gpu 256 --cpus 2 --autoscale --log --listen 9000 ./giantApp
+node virtresources.js ./giantApp --ram 256 --gpu 256 --cpus 2 --autoscale --log --listen 9000
 ```

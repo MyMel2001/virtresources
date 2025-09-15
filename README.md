@@ -48,7 +48,7 @@ Clients connect to a host to contribute resources:
 node virtresources.js --connect 127.0.0.1:9000 --cpus 2
 ```
 
-### Solo w/ Virtual CPU RAM *and* CPUs
+### Solo w/ Virtual GPU RAM *and* CPUs
 
 **Example:**
 
@@ -71,4 +71,10 @@ node virtresources.js --ram 512 --gpu 128 --cpus 8 ./bigApp
 
 ```bash
 node virtresources.js --ram 256 --gpu 256 --cpus 2 --autoscale --log ./scaleTest
+```
+
+### Ultra host computer.
+
+```bash
+node virtresources.js --ram 256 --gpu 256 --cpus 2 --autoscale --log --listen 9000 ./giantApp
 ```

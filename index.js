@@ -1,9 +1,9 @@
-// VirtResources
+// VirtResources with GPU-backed VRAM
 import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import net from "net";
-import { create, globals } from "webgpu";
+import { create, globals, GPUTextureUsage } from "webgpu";
 
 Object.assign(globalThis, globals);
 
@@ -58,33 +58,86 @@ class VirtualRAM {
   }
 }
 
-// --- Virtual Video Memory (WebGPU) ---
+// --- GPU-backed Virtual Video Memory ---
+class VirtualVideoMemory {
+  constructor(device, texture, width, height) {
+    this.device = device;   // GPUDevice or null (CPU fallback)
+    this.texture = texture; // GPUTexture or Buffer for CPU fallback
+    this.width = width;
+    this.height = height;
+  }
+
+  // Write pixel data to VRAM (GPU accelerated if possible)
+  async writePixels(pixels) {
+    if (this.device && this.texture) {
+      // GPU path: create a temporary buffer and copy into texture
+      const byteSize = pixels.byteLength;
+      const uploadBuffer = this.device.createBuffer({
+        size: byteSize,
+        usage: 0x08 | 0x10, // COPY_SRC | MAP_WRITE
+        mappedAtCreation: true
+      });
+      const mapping = new Uint8Array(uploadBuffer.getMappedRange());
+      mapping.set(new Uint8Array(pixels));
+      uploadBuffer.unmap();
+
+      const commandEncoder = this.device.createCommandEncoder();
+      commandEncoder.copyBufferToTexture(
+        { buffer: uploadBuffer, bytesPerRow: this.width * 4, rowsPerImage: this.height },
+        { texture: this.texture },
+        [this.width, this.height, 1]
+      );
+      this.device.queue.submit([commandEncoder.finish()]);
+    } else {
+      // CPU fallback
+      this.texture.set(pixels);
+    }
+  }
+
+  // Read back VRAM data for network transfer
+  async readPixels() {
+    if (this.device && this.texture) {
+      // Create GPU buffer to copy texture into
+      const readBuffer = this.device.createBuffer({
+        size: this.width * this.height * 4,
+        usage: 0x01 | 0x04, // MAP_READ | COPY_DST
+      });
+      const commandEncoder = this.device.createCommandEncoder();
+      commandEncoder.copyTextureToBuffer(
+        { texture: this.texture },
+        { buffer: readBuffer, bytesPerRow: this.width * 4 },
+        [this.width, this.height, 1]
+      );
+      this.device.queue.submit([commandEncoder.finish()]);
+      await readBuffer.mapAsync(0x01); // MAP_READ
+      const copyArray = new Uint8Array(readBuffer.getMappedRange()).slice();
+      readBuffer.unmap();
+      return copyArray;
+    } else {
+      return this.texture;
+    }
+  }
+}
+
+// Initialize GPU VRAM
 async function initVirtualVideoMemory(width=256, height=256) {
   try {
-    // Do NOT pass an empty array to create() — Dawn interprets it as feature 0
-    const navigator = {
-      gpu: create([
-        "enable-dawn-features=allow_unsafe_apis,dump_shaders,disable_symbol_renaming",
-      ]),
-    };
-    const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
+    const navigator = { gpu: create() }; // no empty array
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("No GPU adapter found");
 
-    // Request device without specifying features or limits
-    const device = await(await navigator.gpu.requestAdapter()).requestDevice();
-    
+    const device = await adapter.requestDevice();
     const texture = device.createTexture({
+      size: [width, height],
       format: "rgba8unorm",
-      usage: 0x10 | 0x04, // RENDER_ATTACHMENT | COPY_SRC
-      size: [width, height]
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING
     });
 
-    console.log(`Virtual video memory initialized: ${width}x${height}`);
-    return { device, texture, width, height };
-
+    console.log(`GPU-backed virtual video memory initialized: ${width}x${height}`);
+    return new VirtualVideoMemory(device, texture, width, height);
   } catch (err) {
-    console.warn("WebGPU unavailable, using CPU fallback:", err.message);
-    return { device: null, texture: Buffer.alloc(width*height*4), width, height };
+    console.warn("GPU unavailable, using CPU VRAM fallback:", err.message);
+    return new VirtualVideoMemory(null, Buffer.alloc(width*height*4), width, height);
   }
 }
 
@@ -97,7 +150,6 @@ class NetworkedVRAM {
       this.server = net.createServer(socket => {
         console.log("Networked VRAM client connected");
         this.clients.push(socket);
-
         socket.on("end", () => {
           console.log("Client disconnected from networked VRAM");
           this.clients = this.clients.filter(c => c !== socket);
@@ -107,11 +159,11 @@ class NetworkedVRAM {
     }
   }
 
-  broadcast(frameBuffer) {
+  async broadcast() {
+    if (!this.clients.length) return;
+    const frameBuffer = await this.localVV.readPixels();
     const data = Buffer.from(frameBuffer);
-    for (const client of this.clients){
-      client.write(data);
-    }
+    for (const client of this.clients) client.write(data);
   }
 }
 
@@ -167,11 +219,12 @@ async function main() {
 
   // Auto-scaling
   if(autoscale){
-    let lastUsage = os.cpus().map(c=>c.times).reduce((acc,times)=>Object.values(times).reduce((a,b)=>a+b,0)+acc,0);
-    setInterval(()=>{
-      const currUsage = os.cpus().map(c=>Object.values(times).reduce((a,b)=>a+b,0)+acc,0);
-      // scaling logic omitted for brevity
-    },2000);
+    setInterval(()=>{ /* scaling logic */ }, 2000);
+  }
+
+  // Broadcast VRAM frames if networked
+  if(networkedVV){
+    setInterval(()=>networkedVV.broadcast(), 33); // ~30 FPS
   }
 }
 

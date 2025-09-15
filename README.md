@@ -32,26 +32,30 @@ npm install
 
 The host runs the main application and listens for remote clients:
 
-```bash
-node index.js "<app_command>" [vcpus] [--vram <MB>] [--vvm <MB>] [--autoscale] [--log] [--listen <port>] [app_args...]
-```
-
 **Example:**
 
 ```bash
-node index.js "java -jar MyGame.jar" 8 --vram 2048 --vvm 1024 --autoscale --log --listen 4020
+node virtresources.js --ram 1024 --listen 9000 ./serverApp
 ```
 
 ### Client Mode
 
 Clients connect to a host to contribute resources:
 
+**Example:**
+
 ```bash
-node index.js --connect <host_ip>:<port> [vcpus] [--vram <MB>] [--vvm <MB>] [--autoscale] [--log]
+node virtresources.js --connect 127.0.0.1:9000 --cpus 2
 ```
+
+### Solo w/ Virtual CPU RAM *and* CPUs
 
 **Example:**
 
 ```bash
-node index.js --connect 192.168.50.100:4020 4 --vram 1024 --vvm 512 --autoscale --log
+node virtresources.js --cpus 4 --gpu 256 ./workerApp
 ```
+
+### Solo RAM only
+
+node virtresources.js --ram 512 ./myapp --foo bar

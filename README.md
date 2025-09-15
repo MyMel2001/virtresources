@@ -8,7 +8,7 @@
 
 - **Virtual CPUs (vCPU)**: Simulate extra CPU threads to enhance application parallelism.  
 - **Virtual RAM (vRAM)**: Allocate virtual CPU memory, usable locally or pooled over networked machines.  
-- **Virtual Video Memory (vVM)**: Allocate virtual GPU memory, optionally accelerated using Vulkan. Networked mode allows multiple machines to combine GPU memory.  
+- **Virtual Video Memory (vVM)**: Allocate virtual GPU memory, accelerated using Tensorflow. Networked mode allows multiple machines to combine GPU memory.  
 - **Networked Resource Sharing**: Connect clients to a host to combine CPU, RAM, and vVM resources across machines.  
 - **Auto-Scaling**: Optional auto-adjustment of virtual CPUs based on system load.  
 - **Cross-Platform**: Works on Windows, macOS, and Linux.  
@@ -16,6 +16,13 @@
 
 ---
 
+## However
+
+* Virtual Resoruces ≠ number of hardware detected.
+* More virtual resources ≠ always better — test with your app/physical hardware to find the sweet spot.
+* Overhead is minimal, but spawning too many workers can cause OS context-switching slowdown.
+
+---
 ## Installation
 
 ```bash

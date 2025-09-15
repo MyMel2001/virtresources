@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@webgpu/types": "^0.1.64",
-    "webgpu": "0.2.9",
+    "webgpu": "@0.2.9",
     "pngjs": "^6.0.0"
   },
   "devDependencies": {

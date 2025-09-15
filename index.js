@@ -77,14 +77,12 @@ function suppressWebGPUWarnings(fn) {
 async function initVirtualVideoMemory(width=256, height=256) {
   return await suppressWebGPUWarnings(async () => {
     try {
-      const navigator = { gpu: create([]) };
-      const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
+      const navigator = { gpu: create() }; // <- no array
+      const adapter = await navigator.gpu?.requestAdapter();
+
       if (!adapter) throw new Error("No GPU adapter found");
 
-      const device = await adapter.requestDevice({
-        requiredFeatures: [],
-        requiredLimits: {}
-      });
+      const device = await adapter.requestDevice(); // <- no options at all
 
       const texture = device.createTexture({
         format: "rgba8unorm",

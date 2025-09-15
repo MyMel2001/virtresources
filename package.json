@@ -1,12 +1,16 @@
 {
-  "name": "virtcpus",
-  "version": "1.0.0",
+  "name": "virtresources",
+  "version": "1.1.0",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js",
     "package": "electron-forge package --platform=win32,darwin,linux",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "postinstall": "node scripts/build-vulkan.js"
+  },
+  "dependencies": {
+    "node-vulkan": "^0.0.7"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.8.3",

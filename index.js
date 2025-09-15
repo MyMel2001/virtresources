@@ -81,7 +81,11 @@ async function initVirtualVideoMemory(width=256, height=256) {
       const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
       if (!adapter) throw new Error("No GPU adapter found");
 
-      const device = await adapter.requestDevice({ requiredFeatures: [] });
+      const device = await adapter.requestDevice({
+        requiredFeatures: [],
+        requiredLimits: {}
+      });
+
       const texture = device.createTexture({
         format: "rgba8unorm",
         usage: 0x10 | 0x04, // RENDER_ATTACHMENT | COPY_SRC

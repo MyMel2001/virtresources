@@ -1,6 +1,6 @@
 # VirtResources
 
-**VirtResources** is a cross-platform Node.js tool for simulating additional system resources, including virtual CPUs, virtual RAM, and virtual video memory (vVM). It supports both **local** and **networked modes**, allowing multiple computers to pool their resources into a single virtualized system environment.
+**VirtResources** is a cross-platform Node.js tool for simulating additional system resources, including virtual CPUs, virtual RAM, and virtual video memory (vVM). It supports both **local** and **networked modes**, allowing multiple computers to pool their resources into a single virtualized system environment. Useful for making Minecraft Java Edition a bit less laggy.
 
 ---
 
@@ -9,7 +9,7 @@
 - **Virtual CPUs (vCPU)**: Simulate extra CPU threads to enhance application parallelism.  
 - **Virtual RAM (vRAM)**: Allocate virtual CPU memory, usable locally or pooled over networked machines.  
 - **Virtual Video Memory (vVM)**: Allocate virtual GPU memory, accelerated using Tensorflow. Networked mode allows multiple machines to combine GPU memory.  
-- **Networked Resource Sharing**: Connect clients to a host to combine CPU, RAM, and vVM resources across machines.  
+- **Networked Resource Sharing**: Connect clients to a host to combine vCPU, vRAM, and vVM resources across machines.  
 - **Auto-Scaling**: Optional auto-adjustment of virtual CPUs based on system load.  
 - **Cross-Platform**: Works on Windows, macOS, and Linux.  
 - **GUI Support**: Applications with GUIs remain attached to the terminal or desktop.  

@@ -6,9 +6,9 @@ import { spawn } from "node:child_process";
 import { Worker } from "node:worker_threads";
 import os from "node:os";
 import net from "net";
-import { create, globals, GPUBufferUsage } from "webgpu";
+import { create, globals } from "webgpu";
 
-Object.assign(globalThis, globals);
+Object.assign(globalThis, globals); // GPUBufferUsage and other constants now available globally
 
 // --- Virtual CPU Helpers ---
 function spawnWorkers(count, logUsage=false, summaryCollector=null, prefix="local") {
@@ -33,6 +33,7 @@ function spawnWorkers(count, logUsage=false, summaryCollector=null, prefix="loca
   return workers;
 }
 
+// --- Worker Summary ---
 class WorkerSummary {
   constructor(interval=2000){
     this.stats={};
@@ -77,7 +78,7 @@ class VirtualRAM {
 
 // --- Virtual GPU RAM ---
 class VirtualGPUMemory {
-  constructor(sizeBytes=512*1024*1024){ // default 512MB
+  constructor(sizeBytes=256*1024*1024){ // default 256MB
     this.size = sizeBytes;
     this.device=null;
     this.gpuBuffer=null;
@@ -91,7 +92,7 @@ class VirtualGPUMemory {
       this.device = await this.adapter.requestDevice();
       this.gpuBuffer = this.device.createBuffer({
         size: this.size,
-        usage: GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ|GPUBufferUsage.MAP_WRITE
+        usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE
       });
       console.log(`Allocated ${this.size/1024/1024} MB of GPU-backed virtual memory`);
     } catch(err){

@@ -125,7 +125,11 @@ class VirtualGPURAM {
     this.init();
   }
   async init() {
-    const adapter = await navigator.gpu.requestAdapter();
+    Object.assign(globalThis, globals);
+    const navigator = { gpu: create(['backend=opengl']) };
+    const adapter = navigator.gpu.requestAdapter({
+      powerPreference: 'high-performance', // or 'low-power'
+    });
     this.device = await adapter.requestDevice();
     this.buffer = this.device.createBuffer({
       size: this.size,

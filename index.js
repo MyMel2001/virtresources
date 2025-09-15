@@ -251,7 +251,7 @@ async function main(){
     }, "remote");
 
     if (vcpus > 0) {
-      console.log(`[Init] Virtual CPUs sent: ${vcpus || 0} MB`);
+      console.log(`[Init] Virtual CPUs sent: ${vcpus || 0}`);
     }
 
     await new Promise(()=>{}); // keep alive
@@ -266,7 +266,7 @@ async function main(){
   spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
   const workers = spawnWorkers(vcpus, logUsage, summaryCollector, "local");
   if (vcpus > 0) {
-    console.log(`[Init] Virtual CPUs ready: ${vcpus || 0} MB`);
+    console.log(`[Init] Virtual CPUs ready: ${vcpus || 0}`);
   }
 
   // Auto-scaling

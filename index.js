@@ -204,8 +204,13 @@ async function main(){
 
   const summaryCollector = logUsage ? new WorkerSummary() : null;
   const localRAM = ramMB>0 ? new VirtualRAM(ramMB) : null;
-  console.log(`[Init] Virtual RAM ready: ${ramMB} MB`);
+  if (ramMB > 0) {
+    console.log(`[Init] Virtual RAM ready: ${ramMB || 0} MB`);
+  }
   const localVV  = gpuMB>0 ? new VirtualGPURAM(gpuMB) : null;
+  if (gpuMB > 0) {
+    console.log(`[Init] Virtual GPU Mem ready: ${gpuMB || 0} MB`);
+  }
 
   // -------------------- Network --------------------
   const netServer = listenPort ? new NetworkServer(listenPort) : null;
@@ -245,6 +250,10 @@ async function main(){
       add: (id, ticks)=>socket.write(JSON.stringify({ type:"ticks", id, ticks })+"\n")
     }, "remote");
 
+    if (vcpus > 0) {
+      console.log(`[Init] Virtual CPUs sent: ${vcpus || 0} MB`);
+    }
+
     await new Promise(()=>{}); // keep alive
   }
 
@@ -256,6 +265,9 @@ async function main(){
 
   spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
   const workers = spawnWorkers(vcpus, logUsage, summaryCollector, "local");
+  if (vcpus > 0) {
+    console.log(`[Init] Virtual CPUs ready: ${vcpus || 0} MB`);
+  }
 
   // Auto-scaling
   if(autoscale){

@@ -1,1 +1,1 @@
-node index.js --connect $1:9000 --ram 250 --gpu 250 --cpus 96 > docker-vr-client.log 2>&1 &  # big node
+node index.js --connect $1:9000 96 --ram 250 --gpu 250 > docker-vr-client.log 2>&1 &  # big node

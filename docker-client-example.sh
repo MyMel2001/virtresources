@@ -1,0 +1,1 @@
+node index.js --connect $1:9000 --ram 262144 --gpu 262144 --cpus 96 # we shouldnt need root here.

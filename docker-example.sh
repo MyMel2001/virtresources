@@ -1,2 +1,2 @@
 sudo systemctl stop docker # make sure docker is stopped
-sudo node index.js /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock --ram 250 --gpu 250 --cpus 96 --log --listen 9000 > docker-vr-srv.log 2>&1 &  # apporox. 1 el capitan node, listening on port 9000, log in bg
+sudo node index.js /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock 96 --ram 250 --gpu 250 --log --listen 9000 > docker-vr-srv.log 2>&1 &  # apporox. 1 el capitan node, listening on port 9000, log in bg

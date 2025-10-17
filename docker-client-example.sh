@@ -1,1 +1,1 @@
-node index.js --connect $1:9000 --ram 131072 --gpu 131072 --cpus 96 > docker-vr-client.log 2>&1 &  # we shouldnt need root here.
+node index.js --connect $1:9000 --ram 8096 --gpu 131072 --cpus 96 > docker-vr-client.log 2>&1 &  # big node

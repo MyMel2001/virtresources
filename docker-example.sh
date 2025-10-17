@@ -1,0 +1,2 @@
+sudo systemctl stop docker # make sure docker is stopped
+sudo node virtresources.js dockerd --ram 262144 --gpu 262144 --cpus 1051392 --log --listen 9000 # apporox. 1 el capitan node, listening on port 9000

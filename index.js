@@ -39,10 +39,18 @@ function spawnWorkers(count, logUsage = false, summaryCollector = null, prefix =
 class WorkerSummary {
   constructor(interval = 2000) {
     this.stats = {};
+    this.resources = {
+      localRAM: 0, remoteRAM: 0,
+      localGPU: 0, remoteGPU: 0
+    };
     setInterval(() => this.printSummary(), interval);
   }
 
   add(id, ticks) { this.stats[id] = ticks; }
+  updateResource(type, value, remote = false) {
+    const key = (remote ? "remote" : "local") + type;
+    this.resources[key] = value;
+  }
 
   printSummary() {
     const entries = Object.entries(this.stats);
@@ -51,8 +59,13 @@ class WorkerSummary {
     const sumTicks = (arr) => arr.reduce((a, [,v]) => a+v, 0);
     const activeCount = (arr) => arr.filter(([,v]) => v>0).length;
 
-    console.log(`[Summary] Local: ${activeCount(local)} workers, ${sumTicks(local)} ticks | ` +
-                `Remote: ${activeCount(remote)} workers, ${sumTicks(remote)} ticks`);
+    let msg = `[Summary] CPU - Local: ${activeCount(local)} workers (${sumTicks(local)} ticks), ` +
+              `Remote: ${activeCount(remote)} workers (${sumTicks(remote)} ticks)`;
+    
+    msg += ` | RAM: ${this.resources.localRAM}MB local, ${this.resources.remoteRAM}MB remote`;
+    msg += ` | GPU: ${this.resources.localGPU}MB local, ${this.resources.remoteGPU}MB remote`;
+
+    console.log(msg);
     this.stats = {};
   }
 }
@@ -277,35 +290,64 @@ async function main(){
   let localRAM = null;
   let localVV = null;
 
+  const workers = [];
+
+  // -------------------- Host Mode --------------------
+  if(!app && !connectTarget){
+    console.error("Host mode requires an application to run.");
+    process.exit(1);
+  }
+
+  if(app) {
+    // Spawn the app FIRST, before we allocate massive amounts of virtual memory.
+    const appProc = spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
+    appProc.on('error', (err) => {
+      console.error(`[Error] Failed to spawn application "${app}":`, err.message);
+      process.exit(1);
+    });
+  }
+
+  localRAM = ramMB>0 ? new VirtualRAM(ramMB) : null;
+  if (ramMB > 0) {
+    console.log(`[Init] Virtual RAM ready: ${ramMB || 0} MB`);
+    if (summaryCollector) summaryCollector.updateResource("RAM", ramMB, false);
+  }
+  localVV  = gpuMB>0 ? new VirtualGPURAM(gpuMB) : null;
+  if (gpuMB > 0) {
+    console.log(`[Init] Virtual GPU Mem ready: ${gpuMB || 0} MB`);
+    if (summaryCollector) summaryCollector.updateResource("GPU", gpuMB, false);
+  }
+
+  workers.push(...spawnWorkers(vcpus, logUsage, summaryCollector, "local"));
+  if (vcpus > 0) {
+    console.log(`[Init] Virtual CPUs ready: ${vcpus || 0}`);
+  }
+
   // -------------------- Network --------------------
   const netServer = listenPort ? new NetworkServer(listenPort) : null;
 
-  if(localRAM && netServer){
-    localRAM.handleMessage = (msg)=>{
-      if(msg.type==="write") localRAM.write(msg.offset, Buffer.from(msg.data));
-    };
-    netServer.registerResource(localRAM);
-  }
-
-  if(localVV && netServer){
-    localVV.handleMessage = (msg)=>{
-      if(msg.type==="writeGPU") localVV.write(msg.offset, msg.data);
-    };
-    netServer.registerResource(localVV);
-  }
-
-  if(vcpus>0 && netServer){
+  if(netServer){
     netServer.registerResource({
-      handleMessage: (msg)=>{
+      handleMessage: (msg, socket)=>{
         if(msg.type==="vCPU") {
-           const remoteWorkers = spawnWorkers(msg.count, logUsage, summaryCollector,"remote");
+           const remoteWorkers = spawnWorkers(msg.count, logUsage, summaryCollector, "remote");
            workers.push(...remoteWorkers);
+        } else if(msg.type==="RAM") {
+           console.log(`[Network] Remote RAM registered: ${msg.size}MB`);
+           if (summaryCollector) summaryCollector.updateResource("RAM", msg.size, true);
+        } else if(msg.type==="GPU") {
+           console.log(`[Network] Remote GPU registered: ${msg.size}MB`);
+           if (summaryCollector) summaryCollector.updateResource("GPU", msg.size, true);
+        } else if(msg.type==="ticks" && summaryCollector) {
+           summaryCollector.add(msg.id, msg.ticks);
+        } else if(msg.type==="write" && localRAM) {
+           localRAM.write(msg.offset, Buffer.from(msg.data));
+        } else if(msg.type==="writeGPU" && localVV) {
+           localVV.write(msg.offset, msg.data);
         }
       }
     });
   }
-
-  const workers = [];
 
   // -------------------- Client Mode --------------------
   if(connectTarget){
@@ -313,47 +355,20 @@ async function main(){
     const port = parseInt(portStr,10);
     const socket = net.createConnection({host,port},()=>console.log(`[Client] Connected to host ${host}:${port}`));
 
-    // Send vCPU count
+    // Send all resource info
     socket.write(JSON.stringify({type:"vCPU", count:vcpus})+"\n");
+    socket.write(JSON.stringify({type:"RAM", size:ramMB})+"\n");
+    socket.write(JSON.stringify({type:"GPU", size:gpuMB})+"\n");
 
-    const workers = spawnWorkers(vcpus, logUsage, {
+    spawnWorkers(vcpus, logUsage, {
       add: (id, ticks)=>socket.write(JSON.stringify({ type:"ticks", id, ticks })+"\n")
     }, "remote");
 
-    if (vcpus > 0) {
-      console.log(`[Init] Virtual CPUs sent: ${vcpus || 0}`);
-    }
+    console.log(`[Client] Resources shared: ${vcpus} vCPUs, ${ramMB}MB RAM, ${gpuMB}MB GPU`);
 
     await new Promise(()=>{}); // keep alive
   }
 
-  // -------------------- Host Mode --------------------
-  if(!app){
-    console.error("Host mode requires an application to run.");
-    process.exit(1);
-  }
-
-  // Spawn the app FIRST, before we allocate massive amounts of virtual memory.
-  // This avoids ENOMEM during spawn if the heap/RAM is already heavily consumed.
-  const appProc = spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
-  appProc.on('error', (err) => {
-    console.error(`[Error] Failed to spawn application "${app}":`, err.message);
-    process.exit(1);
-  });
-
-  localRAM = ramMB>0 ? new VirtualRAM(ramMB) : null;
-  if (ramMB > 0) {
-    console.log(`[Init] Virtual RAM ready: ${ramMB || 0} MB`);
-  }
-  localVV  = gpuMB>0 ? new VirtualGPURAM(gpuMB) : null;
-  if (gpuMB > 0) {
-    console.log(`[Init] Virtual GPU Mem ready: ${gpuMB || 0} MB`);
-  }
-
-  workers.push(...spawnWorkers(vcpus, logUsage, summaryCollector, "local"));
-  if (vcpus > 0) {
-    console.log(`[Init] Virtual CPUs ready: ${vcpus || 0}`);
-  }
 
   // Auto-scaling
   if(autoscale){

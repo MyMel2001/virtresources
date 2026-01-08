@@ -1,2 +1,11 @@
-[Init] Virtual CPUs sent: 96
+[VirtualRAM] Allocated 3210 MB
+[Init] Virtual RAM ready: 3210 MB
+
+============================
+Hi, looks like you are running TensorFlow.js in Node.js. To speed things up dramatically, install our node backend, visit https://github.com/tensorflow/tfjs-node for more details. 
+============================
+[VirtualGPURAM] Allocated 999 MB of virtual GPU memory in 100 segments
+[Init] Virtual GPU Mem ready: 999 MB
+[Init] Virtual CPUs ready: 96
+[Client] Resources shared: 96 vCPUs, 3210MB RAM, 999MB GPU
 [Client] Connected to host 192.168.50.135:9000

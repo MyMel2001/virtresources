@@ -273,14 +273,9 @@ async function main(){
   }
 
   const summaryCollector = logUsage ? new WorkerSummary() : null;
-  const localRAM = ramMB>0 ? new VirtualRAM(ramMB) : null;
-  if (ramMB > 0) {
-    console.log(`[Init] Virtual RAM ready: ${ramMB || 0} MB`);
-  }
-  const localVV  = gpuMB>0 ? new VirtualGPURAM(gpuMB) : null;
-  if (gpuMB > 0) {
-    console.log(`[Init] Virtual GPU Mem ready: ${gpuMB || 0} MB`);
-  }
+  // Virtual memory allocation will happen AFTER app spawn in main flow
+  let localRAM = null;
+  let localVV = null;
 
   // -------------------- Network --------------------
   const netServer = listenPort ? new NetworkServer(listenPort) : null;
@@ -338,7 +333,23 @@ async function main(){
     process.exit(1);
   }
 
-  spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
+  // Spawn the app FIRST, before we allocate massive amounts of virtual memory.
+  // This avoids ENOMEM during spawn if the heap/RAM is already heavily consumed.
+  const appProc = spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
+  appProc.on('error', (err) => {
+    console.error(`[Error] Failed to spawn application "${app}":`, err.message);
+    process.exit(1);
+  });
+
+  localRAM = ramMB>0 ? new VirtualRAM(ramMB) : null;
+  if (ramMB > 0) {
+    console.log(`[Init] Virtual RAM ready: ${ramMB || 0} MB`);
+  }
+  localVV  = gpuMB>0 ? new VirtualGPURAM(gpuMB) : null;
+  if (gpuMB > 0) {
+    console.log(`[Init] Virtual GPU Mem ready: ${gpuMB || 0} MB`);
+  }
+
   workers.push(...spawnWorkers(vcpus, logUsage, summaryCollector, "local"));
   if (vcpus > 0) {
     console.log(`[Init] Virtual CPUs ready: ${vcpus || 0}`);

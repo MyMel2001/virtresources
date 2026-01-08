@@ -16,7 +16,11 @@ function spawnWorkers(count, logUsage = false, summaryCollector = null, prefix =
     const worker = new Worker(`
       const { parentPort } = require("node:worker_threads");
       let busyTicks = 0;
-      setInterval(() => { busyTicks++; }, 1000);
+      // Simulate CPU load
+      setInterval(() => { 
+        for(let i=0; i<1e6; i++) { Math.sqrt(i); }
+        busyTicks++; 
+      }, 100);
       setInterval(() => {
         parentPort.postMessage({ busyTicks });
         busyTicks = 0;
@@ -80,13 +84,19 @@ class VirtualRAM {
   }
 
   write(offset, data) {
-    if (offset + data.length > this.size) throw new Error("Out of bounds write");
-    data.copy(this.buffer, offset);
+    if (offset + data.length > this.size) {
+       console.warn("[VirtualRAM] Out of bounds write attempted, truncating");
+       data = data.slice(0, this.size - offset);
+    }
+    if (data.length > 0) data.copy(this.buffer, offset);
   }
 
   read(offset, length) {
-    if (offset + length > this.size) throw new Error("Out of bounds read");
-    return this.buffer.slice(offset, offset+length);
+    if (offset + length > this.size) {
+      console.warn("[VirtualRAM] Out of bounds read attempted, truncating");
+      length = this.size - offset;
+    }
+    return length > 0 ? this.buffer.slice(offset, offset+length) : Buffer.alloc(0);
   }
 
   fill(value) {
@@ -105,17 +115,28 @@ class VirtualGPURAM {
   }
 
   write(offset, data) {
-    if (offset + data.length > this.size) throw new Error("Out of bounds write");
-    const sub = tf.tensor(data);
-    this.tensor = tf.concat([
-      this.tensor.slice([0],[offset]),
-      sub,
-      this.tensor.slice([offset+data.length])
-    ]);
+    if (offset + data.length > this.size) {
+       console.warn("[VirtualGPURAM] Out of bounds write attempted");
+       return;
+    }
+    tf.tidy(() => {
+      const sub = tf.tensor(data);
+      const oldTensor = this.tensor;
+      this.tensor = tf.keep(tf.concat([
+        oldTensor.slice([0],[offset]),
+        sub,
+        oldTensor.slice([offset+data.length])
+      ]));
+      oldTensor.dispose();
+    });
   }
 
   read(offset, length) {
-    if (offset + length > this.size) throw new Error("Out of bounds read");
+    if (offset + length > this.size) {
+       console.warn("[VirtualGPURAM] Out of bounds read attempted");
+       length = this.size - offset;
+    }
+    if (length <= 0) return new Float32Array(0);
     return this.tensor.slice([offset], [length]).dataSync();
   }
 
@@ -233,10 +254,15 @@ async function main(){
   if(vcpus>0 && netServer){
     netServer.registerResource({
       handleMessage: (msg)=>{
-        if(msg.type==="vCPU") spawnWorkers(msg.count, logUsage, summaryCollector,"remote");
+        if(msg.type==="vCPU") {
+           const remoteWorkers = spawnWorkers(msg.count, logUsage, summaryCollector,"remote");
+           workers.push(...remoteWorkers);
+        }
       }
     });
   }
+
+  const workers = [];
 
   // -------------------- Client Mode --------------------
   if(connectTarget){
@@ -265,7 +291,7 @@ async function main(){
   }
 
   spawn(app, appArgs, { stdio:"inherit", shell:os.platform()!=="win32" });
-  const workers = spawnWorkers(vcpus, logUsage, summaryCollector, "local");
+  workers.push(...spawnWorkers(vcpus, logUsage, summaryCollector, "local"));
   if (vcpus > 0) {
     console.log(`[Init] Virtual CPUs ready: ${vcpus || 0}`);
   }

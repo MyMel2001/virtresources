@@ -109,7 +109,8 @@ class VirtualRAM {
 class VirtualGPURAM {
   constructor(sizeMB = 256, name = "VirtualGPURAM") {
     this.size = sizeMB * 1024 * 1024;
-    this.tensor = tf.tensor(new Float32Array(this.size), [this.size]);
+    // TensorFlow.js can handle large allocations better if we don't create a massive intermediate Float32Array on the heap
+    this.tensor = tf.zeros([this.size]); 
     this.name = name;
     console.log(`[${this.name}] Allocated ${sizeMB} MB of virtual GPU memory`);
   }

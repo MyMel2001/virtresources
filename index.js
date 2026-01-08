@@ -109,10 +109,24 @@ class VirtualRAM {
 class VirtualGPURAM {
   constructor(sizeMB = 256, name = "VirtualGPURAM") {
     this.size = sizeMB * 1024 * 1024;
-    // TensorFlow.js can handle large allocations better if we don't create a massive intermediate Float32Array on the heap
-    this.tensor = tf.zeros([this.size]); 
+    // We use a segmented approach to avoid massive single-array allocations
+    this.segmentSize = 10 * 1024 * 1024; // 10MB segments
+    this.segments = [];
+    const numSegments = Math.ceil(this.size / this.segmentSize);
+    
+    for (let i = 0; i < numSegments; i++) {
+      const currentSegmentSize = Math.min(this.segmentSize, this.size - i * this.segmentSize);
+      this.segments.push(tf.variable(tf.zeros([currentSegmentSize])));
+    }
+
     this.name = name;
-    console.log(`[${this.name}] Allocated ${sizeMB} MB of virtual GPU memory`);
+    console.log(`[${this.name}] Allocated ${sizeMB} MB of virtual GPU memory in ${numSegments} segments`);
+  }
+
+  _getSegmentAndOffset(offset) {
+    const segIndex = Math.floor(offset / this.segmentSize);
+    const segOffset = offset % this.segmentSize;
+    return { segIndex, segOffset };
   }
 
   write(offset, data) {
@@ -120,16 +134,29 @@ class VirtualGPURAM {
        console.warn("[VirtualGPURAM] Out of bounds write attempted");
        return;
     }
-    tf.tidy(() => {
-      const sub = tf.tensor(data);
-      const oldTensor = this.tensor;
-      this.tensor = tf.keep(tf.concat([
-        oldTensor.slice([0],[offset]),
-        sub,
-        oldTensor.slice([offset+data.length])
-      ]));
-      oldTensor.dispose();
-    });
+    
+    let bytesWritten = 0;
+    while (bytesWritten < data.length) {
+      const { segIndex, segOffset } = this._getSegmentAndOffset(offset + bytesWritten);
+      const segment = this.segments[segIndex];
+      const remainingInSegment = this.segmentSize - segOffset;
+      const toWrite = Math.min(data.length - bytesWritten, remainingInSegment);
+      
+      const chunk = data.slice(bytesWritten, bytesWritten + toWrite);
+      
+      tf.tidy(() => {
+        const sub = tf.tensor(chunk);
+        const oldVal = segment.read();
+        const newVal = tf.concat([
+          oldVal.slice([0], [segOffset]),
+          sub,
+          oldVal.slice([segOffset + toWrite])
+        ]);
+        segment.assign(newVal);
+      });
+      
+      bytesWritten += toWrite;
+    }
   }
 
   read(offset, length) {
@@ -138,15 +165,35 @@ class VirtualGPURAM {
        length = this.size - offset;
     }
     if (length <= 0) return new Float32Array(0);
-    return this.tensor.slice([offset], [length]).dataSync();
+
+    const result = new Float32Array(length);
+    let bytesRead = 0;
+    
+    while (bytesRead < length) {
+      const { segIndex, segOffset } = this._getSegmentAndOffset(offset + bytesRead);
+      const segment = this.segments[segIndex];
+      const remainingInSegment = this.segmentSize - segOffset;
+      const toRead = Math.min(length - bytesRead, remainingInSegment);
+      
+      const chunk = segment.slice([segOffset], [toRead]).dataSync();
+      result.set(chunk, bytesRead);
+      
+      bytesRead += toRead;
+    }
+    
+    return result;
   }
 
   fill(value) {
-    this.tensor = tf.fill([this.size], value);
+    for (const segment of this.segments) {
+      segment.assign(tf.fill(segment.shape, value));
+    }
   }
 
   compute(fn) {
-    this.tensor = fn(this.tensor);
+    for (const segment of this.segments) {
+      segment.assign(fn(segment));
+    }
   }
 }
 
